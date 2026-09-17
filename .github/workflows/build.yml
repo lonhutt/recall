@@ -1,0 +1,40 @@
+name: build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          # go.mod already pins the toolchain version; no reason to say it twice
+          go-version-file: go.mod
+
+      # gofmt -l exits 0 even when it finds something, so the check is whether
+      # its output is empty; printing the list is what makes a failure useful
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - run: go build ./...
+
+      - run: go vet -tags=integration ./...
+
+      # the integration tag is additive, so this runs the plain unit tests too.
+      # the postgres tests start their own container through testcontainers,
+      # and they skip rather than fail when docker isn't reachable.
+      - run: make test-integration

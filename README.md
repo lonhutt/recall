@@ -1,5 +1,7 @@
 # Recall
 
+[![build](https://github.com/lonhutt/recall/actions/workflows/build.yml/badge.svg)](https://github.com/lonhutt/recall/actions/workflows/build.yml)
+
 An MCP server for persisted memory, backed by Postgres + pgvector. Any
 MCP-capable agent can save, search, and list structured memory notes, and
 log/list timestamped episodic events. Embeddings are generated locally via a
