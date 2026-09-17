@@ -1,3 +1,19 @@
+# secrets; .env.example is the committed template, so it has to survive the
+# wildcard above it
 .env
+.env.*
+!.env.example
+
+# build output
 bin/
+
+# go tooling: compiled test binaries, coverage profiles, local workspace files
+*.test
+*.out
+go.work
+go.work.sum
+
+# claude code; per-user permissions and the scratch dirs skills create, while
+# .claude/skills/recall itself is committed on purpose
+.claude/settings.local.json
 .claude/skills/*-workspace/
