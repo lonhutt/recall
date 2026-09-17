@@ -26,7 +26,9 @@ docker compose up -d --build
 This builds and starts all three services: `postgres`, `embeddings`, and
 `recall`. `recall` waits for the other two to report healthy, then runs
 migrations automatically on startup (unless `RECALL_MIGRATE_ON_START=false`)
-and serves MCP over HTTP on `127.0.0.1:8092`. `postgres` and `embeddings`
+and serves MCP over HTTP on `127.0.0.1:8092` (`/mcp`, bearer-token
+authenticated; `/healthz` is unauthenticated liveness, which is what the
+container's healthcheck hits). `postgres` and `embeddings`
 publish no host ports at all; `recall` is their only consumer, and reaches
 them over the internal compose network by service name. The embedding
 server downloads EmbeddingGemma from Hugging Face on its first start

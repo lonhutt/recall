@@ -46,14 +46,18 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanMemory(row rowScanner) (*models.Memory, error) {
+// scanMemory reads one row selected as memoryColumns; extra destinations are
+// appended in order, for callers that select a trailing expression alongside
+// the standard columns.
+func scanMemory(row rowScanner, extra ...any) (*models.Memory, error) {
 	var (
 		m       models.Memory
 		project sql.NullString
 		agent   sql.NullString
 	)
-	err := row.Scan(&m.ID, &m.Type, &m.Slug, &m.Description, &m.Body, &project, &agent,
-		&m.Tags, &m.EmbeddingModel, &m.CreatedAt, &m.UpdatedAt)
+	dest := []any{&m.ID, &m.Type, &m.Slug, &m.Description, &m.Body, &project, &agent,
+		&m.Tags, &m.EmbeddingModel, &m.CreatedAt, &m.UpdatedAt}
+	err := row.Scan(append(dest, extra...)...)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, models.ErrNotFound

@@ -20,6 +20,7 @@ type fakeStore struct {
 	searchResp []postgres.ScoredMemory
 	searchErr  error
 	lastLimit  int
+	lastFilter postgres.MemoryFilter
 }
 
 func newFakeStore() *fakeStore {
@@ -111,6 +112,7 @@ func (f *fakeStore) ListMemories(_ context.Context, _ postgres.MemoryFilter, lim
 // search see their own data.
 func (f *fakeStore) SearchMemories(_ context.Context, _ []float32, filter postgres.MemoryFilter, limit int) ([]postgres.ScoredMemory, error) {
 	f.lastLimit = limit
+	f.lastFilter = filter
 	if f.searchErr != nil {
 		return nil, f.searchErr
 	}
@@ -126,6 +128,9 @@ func (f *fakeStore) SearchMemories(_ context.Context, _ []float32, filter postgr
 			continue
 		}
 		if filter.Agent != nil && m.Agent != *filter.Agent {
+			continue
+		}
+		if filter.EmbeddingModel != nil && m.EmbeddingModel != *filter.EmbeddingModel {
 			continue
 		}
 		out = append(out, postgres.ScoredMemory{Memory: m, Score: 1})

@@ -48,6 +48,11 @@ services:
       RECALL_HTTP_TOKEN: ${RECALL_HTTP_TOKEN}
     ports:
       - "127.0.0.1:8092:8092"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8092/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
 volumes:
   recall-pgdata:

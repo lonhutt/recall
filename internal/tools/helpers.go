@@ -2,14 +2,16 @@ package tools
 
 import "github.com/lonhutt/recall/internal/store/postgres"
 
-func clamp(v, min, max, def int) int {
+// limitOrDefault resolves a caller-supplied result limit; absent (0) becomes
+// def, and anything out of range gets pulled to the nearest bound.
+func limitOrDefault(v, low, high, def int) int {
 	switch {
 	case v == 0:
 		return def
-	case v < min:
-		return min
-	case v > max:
-		return max
+	case v < low:
+		return low
+	case v > high:
+		return high
 	default:
 		return v
 	}

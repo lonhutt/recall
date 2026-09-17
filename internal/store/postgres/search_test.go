@@ -69,3 +69,33 @@ func TestSearchMemoriesFiltersByProject(t *testing.T) {
 		}
 	}
 }
+
+func TestSearchMemoriesExcludesOtherEmbeddingModels(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	for _, row := range []struct{ slug, model string }{
+		{"current-model-note", "embeddinggemma"},
+		{"stale-model-note", "voyage-3-large"},
+	} {
+		_, err := store.CreateMemory(ctx, postgres.NewMemory{
+			Type: "reference", Slug: row.slug, Description: "d", Body: "b",
+			Embedding: vector(1), EmbeddingModel: row.model,
+		})
+		if err != nil {
+			t.Fatalf("CreateMemory(%s): %v", row.slug, err)
+		}
+	}
+
+	model := "embeddinggemma"
+	results, err := store.SearchMemories(ctx, vector(1), postgres.MemoryFilter{EmbeddingModel: &model}, 10)
+	if err != nil {
+		t.Fatalf("SearchMemories: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want only the row embedded by the current model", len(results))
+	}
+	if results[0].Slug != "current-model-note" {
+		t.Errorf("result = %q, want current-model-note", results[0].Slug)
+	}
+}

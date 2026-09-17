@@ -25,7 +25,7 @@ type ListEventsResult struct {
 }
 
 func (t *Tools) ListEvents(ctx context.Context, _ *mcp.CallToolRequest, a ListEventsArgs) (*mcp.CallToolResult, ListEventsResult, error) {
-	limit := clamp(a.Limit, 1, 200, 50)
+	limit := limitOrDefault(a.Limit, 1, 200, 50)
 	filter := postgres.EventFilter{Tags: a.Tags}
 	if a.Project != "" {
 		filter.Project = &a.Project
@@ -48,7 +48,7 @@ func (t *Tools) ListEvents(ctx context.Context, _ *mcp.CallToolRequest, a ListEv
 		filter.OccurredBefore = &ts
 	}
 
-	events, err := t.Store.ListLogEvents(ctx, filter, limit, a.Offset)
+	events, err := t.Store.ListLogEvents(ctx, filter, limit, max(a.Offset, 0))
 	if err != nil {
 		return nil, ListEventsResult{}, err
 	}

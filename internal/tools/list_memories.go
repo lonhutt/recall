@@ -22,10 +22,10 @@ type ListMemoriesResult struct {
 // ListMemories browses memory notes by metadata only; it never calls the
 // embedder, so it's the cheap replacement for reading the old MEMORY.md index.
 func (t *Tools) ListMemories(ctx context.Context, _ *mcp.CallToolRequest, a ListMemoriesArgs) (*mcp.CallToolResult, ListMemoriesResult, error) {
-	limit := clamp(a.Limit, 1, 200, 50)
+	limit := limitOrDefault(a.Limit, 1, 200, 50)
 	filter := memoryFilterFrom(a.Type, a.Project, a.Agent, a.Tags)
 
-	memories, err := t.Store.ListMemories(ctx, filter, limit, a.Offset)
+	memories, err := t.Store.ListMemories(ctx, filter, limit, max(a.Offset, 0))
 	if err != nil {
 		return nil, ListMemoriesResult{}, err
 	}

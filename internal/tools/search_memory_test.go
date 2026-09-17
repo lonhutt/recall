@@ -81,3 +81,19 @@ func TestSearchMemoryWrapsEmbeddingFailure(t *testing.T) {
 		t.Errorf("error = %v, want it to wrap %v", err, embedFailure)
 	}
 }
+
+func TestSearchMemoryScopesToCurrentEmbeddingModel(t *testing.T) {
+	store := newFakeStore()
+	embedder := &fakeEmbedder{vector: []float32{1}}
+	tools := &Tools{Store: store, Embedder: embedder, EmbeddingModel: "embeddinggemma"}
+
+	if _, _, err := tools.SearchMemory(context.Background(), nil, SearchMemoryArgs{Query: "anything"}); err != nil {
+		t.Fatalf("SearchMemory: %v", err)
+	}
+	if store.lastFilter.EmbeddingModel == nil {
+		t.Fatal("filter.EmbeddingModel = nil, want the configured model so foreign vectors are excluded")
+	}
+	if got := *store.lastFilter.EmbeddingModel; got != "embeddinggemma" {
+		t.Errorf("filter.EmbeddingModel = %q, want embeddinggemma", got)
+	}
+}

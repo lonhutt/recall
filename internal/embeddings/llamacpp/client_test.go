@@ -13,6 +13,13 @@ import (
 	"github.com/lonhutt/recall/internal/embeddings"
 )
 
+// The EmbeddingGemma prefix pair, duplicated here so these tests run against
+// a realistic one; internal/config owns the production defaults.
+const (
+	gemmaQueryPrefix    = "task: search result | query: "
+	gemmaDocumentPrefix = "title: none | text: "
+)
+
 func TestEmbedPrefixesQueryTextAndParsesResponse(t *testing.T) {
 	var gotPath string
 	var gotBody map[string]any
@@ -32,7 +39,7 @@ func TestEmbedPrefixesQueryTextAndParsesResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "embeddinggemma", DefaultQueryPrefix, DefaultDocumentPrefix)
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix)
 
 	got, err := c.Embed(context.Background(), []string{"first", "second"}, embeddings.InputTypeQuery)
 	if err != nil {
@@ -69,7 +76,7 @@ func TestEmbedPrefixesDocumentText(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "embeddinggemma", DefaultQueryPrefix, DefaultDocumentPrefix)
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix)
 	if _, err := c.Embed(context.Background(), []string{"hello"}, embeddings.InputTypeDocument); err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
@@ -108,7 +115,7 @@ func TestEmbedMapsNonSuccessResponseToAPIError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "embeddinggemma", DefaultQueryPrefix, DefaultDocumentPrefix)
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix)
 	c.backoff = nil
 
 	_, err := c.Embed(context.Background(), []string{"x"}, embeddings.InputTypeQuery)
@@ -142,7 +149,7 @@ func TestEmbedRetriesOnServerErrorThenSucceeds(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "embeddinggemma", DefaultQueryPrefix, DefaultDocumentPrefix)
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix)
 	c.backoff = []time.Duration{time.Millisecond, time.Millisecond}
 
 	got, err := c.Embed(context.Background(), []string{"x"}, embeddings.InputTypeQuery)
@@ -155,5 +162,51 @@ func TestEmbedRetriesOnServerErrorThenSucceeds(t *testing.T) {
 	want := [][]float32{{0.9}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Embed() = %v, want %v", got, want)
+	}
+}
+
+// the next three cover a malformed response from the embeddings server;
+// callers index into it by position (vectors[0]), so a bad response used to
+// panic instead of erroring.
+func TestEmbedRejectsOutOfRangeIndex(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"index": 1, "embedding": []float32{0.1}}},
+		})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix)
+	if _, err := c.Embed(context.Background(), []string{"x"}, embeddings.InputTypeQuery); err == nil {
+		t.Fatal("expected an error for an out-of-range index, got nil")
+	}
+}
+
+func TestEmbedRejectsWrongEmbeddingCount(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{}})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix)
+	if _, err := c.Embed(context.Background(), []string{"x"}, embeddings.InputTypeQuery); err == nil {
+		t.Fatal("expected an error for zero embeddings, got nil")
+	}
+}
+
+func TestEmbedRejectsDuplicateIndex(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"index": 0, "embedding": []float32{0.1}},
+				{"index": 0, "embedding": []float32{0.2}},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix)
+	if _, err := c.Embed(context.Background(), []string{"a", "b"}, embeddings.InputTypeQuery); err == nil {
+		t.Fatal("expected an error when one input got no embedding, got nil")
 	}
 }

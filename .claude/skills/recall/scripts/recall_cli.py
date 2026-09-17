@@ -30,12 +30,16 @@ DEFAULT_ENV_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..
 def read_env_file(path):
     values = {}
     if os.path.exists(path):
-        for line in open(path):
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            values[k] = v
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                # .env quotes values whose trailing space matters, so a quoted
+                # token is an easy mistake to make; sending Bearer "abc" gets a
+                # 401 that reads like the token was rotated.
+                values[k] = v.strip().strip("\'\"")
     return values
 
 

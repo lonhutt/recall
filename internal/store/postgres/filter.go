@@ -12,6 +12,9 @@ type MemoryFilter struct {
 	Project *string
 	Agent   *string
 	Tags    []string
+	// EmbeddingModel only means anything to SearchMemories, which must not
+	// compare vectors from two different models; ListMemories leaves it nil.
+	EmbeddingModel *string
 }
 
 // buildFilter renders f as a SQL WHERE clause (empty string if f has no
@@ -32,6 +35,7 @@ func buildFilter(paramOffset int, f MemoryFilter) (where string, args []any) {
 	add("type", f.Type)
 	add("project", f.Project)
 	add("agent", f.Agent)
+	add("embedding_model", f.EmbeddingModel)
 
 	if len(f.Tags) > 0 {
 		i++

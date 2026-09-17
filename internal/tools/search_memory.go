@@ -27,7 +27,7 @@ func (t *Tools) SearchMemory(ctx context.Context, _ *mcp.CallToolRequest, a Sear
 	if strings.TrimSpace(a.Query) == "" {
 		return nil, SearchMemoryResult{}, fmt.Errorf("query is required")
 	}
-	limit := clamp(a.Limit, 1, 50, 10)
+	limit := limitOrDefault(a.Limit, 1, 50, 10)
 
 	vectors, err := t.Embedder.Embed(ctx, []string{a.Query}, embeddings.InputTypeQuery)
 	if err != nil {
@@ -35,6 +35,11 @@ func (t *Tools) SearchMemory(ctx context.Context, _ *mcp.CallToolRequest, a Sear
 	}
 
 	filter := memoryFilterFrom(a.Type, a.Project, a.Agent, a.Tags)
+	// scope the search to rows the current model embedded; a distance against
+	// a vector from another model doesn't mean anything, so a half
+	// re-embedded table would quietly degrade ranking instead of just
+	// returning fewer rows.
+	filter.EmbeddingModel = &t.EmbeddingModel
 	scored, err := t.Store.SearchMemories(ctx, vectors[0], filter, limit)
 	if err != nil {
 		return nil, SearchMemoryResult{}, err

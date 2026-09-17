@@ -11,11 +11,16 @@ import (
 	"github.com/lonhutt/recall/internal/store/postgres"
 )
 
-// vector returns a models.EmbeddingDimension-length vector with direction
-// as its leading components and zeros elsewhere, so cosine-similarity
-// comparisons between a handful of test vectors are predictable.
+// embeddingDimension mirrors the vector(768) width migration 000004 sets;
+// the schema is the source of truth, this is just what a test row has to
+// match to insert at all.
+const embeddingDimension = 768
+
+// vector returns an embeddingDimension-length vector with direction as its
+// leading components and zeros elsewhere, so cosine-similarity comparisons
+// between a handful of test vectors are predictable.
 func vector(direction ...float32) []float32 {
-	v := make([]float32, models.EmbeddingDimension)
+	v := make([]float32, embeddingDimension)
 	copy(v, direction)
 	return v
 }

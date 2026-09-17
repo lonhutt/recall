@@ -2,11 +2,6 @@ package models
 
 import "time"
 
-// EmbeddingDimension is the fixed vector width used for every stored
-// embedding, matching EmbeddingGemma's native output. Changing it requires
-// a schema migration and re-embedding all existing rows.
-const EmbeddingDimension = 768
-
 type MemoryType string
 
 const (

@@ -16,16 +16,11 @@ import (
 
 const embeddingsPath = "/v1/embeddings"
 
-// DefaultQueryPrefix and DefaultDocumentPrefix are EmbeddingGemma's
-// documented asymmetric-retrieval prompt format: queries and documents are
-// encoded differently for better retrieval
-// (https://ai.google.dev/gemma/docs/embeddinggemma/model_card). A different
-// model family likely needs different prefixes (or none) — pass overrides
-// to New rather than editing these.
-const (
-	DefaultQueryPrefix    = "task: search result | query: "
-	DefaultDocumentPrefix = "title: none | text: "
-)
+// requestTimeout bounds a single embed call. The case this is for is an
+// embeddings server that accepts the connection and then never answers
+// (llama.cpp still loading the model); the retry ladder below can't help
+// there, since nothing ever comes back to retry.
+const requestTimeout = 30 * time.Second
 
 var defaultBackoff = []time.Duration{250 * time.Millisecond, 750 * time.Millisecond}
 
@@ -38,13 +33,16 @@ type Client struct {
 	backoff        []time.Duration
 }
 
+// New builds a client for the llama.cpp server at baseURL. The prefixes
+// implement the embedding model's asymmetric-retrieval convention, if the
+// model has one; internal/config holds the defaults.
 func New(baseURL, model, queryPrefix, documentPrefix string) *Client {
 	return &Client{
 		baseURL:        baseURL,
 		model:          model,
 		queryPrefix:    queryPrefix,
 		documentPrefix: documentPrefix,
-		httpClient:     http.DefaultClient,
+		httpClient:     &http.Client{Timeout: requestTimeout},
 		backoff:        defaultBackoff,
 	}
 }
@@ -80,7 +78,9 @@ func (c *Client) prefix(text string, kind embeddings.InputType) string {
 	return c.documentPrefix + text
 }
 
-// Embed returns one vector per input text, in the same order as texts.
+// Embed returns exactly one non-empty vector per input text, in the same
+// order as texts, or an error; callers can index the result by input
+// position.
 func (c *Client) Embed(ctx context.Context, texts []string, kind embeddings.InputType) ([][]float32, error) {
 	prefixed := make([]string, len(texts))
 	for i, t := range texts {
@@ -94,7 +94,7 @@ func (c *Client) Embed(ctx context.Context, texts []string, kind embeddings.Inpu
 
 	var lastErr error
 	for attempt := 0; ; attempt++ {
-		vectors, retriable, err := c.doEmbed(ctx, body)
+		vectors, retriable, err := c.doEmbed(ctx, body, len(texts))
 		if err == nil {
 			return vectors, nil
 		}
@@ -110,7 +110,7 @@ func (c *Client) Embed(ctx context.Context, texts []string, kind embeddings.Inpu
 	}
 }
 
-func (c *Client) doEmbed(ctx context.Context, body []byte) ([][]float32, bool, error) {
+func (c *Client) doEmbed(ctx context.Context, body []byte, want int) ([][]float32, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+embeddingsPath, bytes.NewReader(body))
 	if err != nil {
 		return nil, false, fmt.Errorf("building llama.cpp request: %w", err)
@@ -142,9 +142,26 @@ func (c *Client) doEmbed(ctx context.Context, body []byte) ([][]float32, bool, e
 		return nil, false, fmt.Errorf("decoding llama.cpp response: %w", err)
 	}
 
-	vectors := make([][]float32, len(parsed.Data))
+	// the response is untrusted; a bad count, a duplicate or out-of-range
+	// index, or an empty vector would otherwise reach callers as a short
+	// slice or a nil element, and they index into it directly.
+	if len(parsed.Data) != want {
+		return nil, false, fmt.Errorf("llama.cpp returned %d embeddings for %d inputs", len(parsed.Data), want)
+	}
+	vectors := make([][]float32, want)
 	for _, d := range parsed.Data {
+		if d.Index < 0 || d.Index >= want {
+			return nil, false, fmt.Errorf("llama.cpp returned out-of-range embedding index %d for %d inputs", d.Index, want)
+		}
+		if len(d.Embedding) == 0 {
+			return nil, false, fmt.Errorf("llama.cpp returned an empty embedding at index %d", d.Index)
+		}
 		vectors[d.Index] = d.Embedding
+	}
+	for i, v := range vectors {
+		if v == nil {
+			return nil, false, fmt.Errorf("llama.cpp returned no embedding for input %d", i)
+		}
 	}
 	return vectors, false, nil
 }

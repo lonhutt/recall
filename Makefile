@@ -1,4 +1,4 @@
-.PHONY: up down migrate-up migrate-down run test test-integration build
+.PHONY: up down migrate-up run test test-integration build
 
 up:
 	docker compose up -d --build

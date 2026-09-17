@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -85,11 +86,24 @@ func serveHTTP(ctx context.Context, cfg *config.Config, server *mcp.Server) erro
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", httpauth.Bearer(cfg.HTTPToken, handler))
+	// liveness only, so it stays unauthenticated; it reports nothing about the
+	// database or the embeddings server, just that this process is serving.
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("ok"))
+	})
 
 	httpServer := &http.Server{Addr: ":" + cfg.HTTPPort, Handler: mux}
 	go func() {
 		<-ctx.Done()
-		httpServer.Close()
+		// give in-flight tool calls a moment to answer; a write that already
+		// committed shouldn't look like a network failure to the client. The
+		// timeout is there because MCP holds long-lived streams open and
+		// Shutdown otherwise waits on them forever.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			httpServer.Close()
+		}
 	}()
 
 	slog.Info("recall MCP server starting", "transport", "http", "port", cfg.HTTPPort)
