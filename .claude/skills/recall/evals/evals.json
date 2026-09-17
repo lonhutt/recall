@@ -1,0 +1,44 @@
+{
+  "skill_name": "recall",
+  "evals": [
+    {
+      "id": 0,
+      "name": "recall-health-check",
+      "prompt": "Hey, is recall actually up and healthy right now? I want to make sure Claude can save memories before I keep working.",
+      "expected_output": "Correctly identifies and checks all three containers (postgres, embeddings, recall) via docker compose, reports their real health status accurately, and doesn't take any destructive action.",
+      "files": [],
+      "assertions": [
+        {"text": "Checks all three containers (postgres, embeddings, recall), not just one"},
+        {"text": "Uses docker compose ps (or logs) to get a real status rather than guessing"},
+        {"text": "Final verdict matches the real, actual health status of the stack"},
+        {"text": "Runs no destructive/mutating command (no down/restart/up/build, no editing .env/docker-compose.yml/~/.claude.json)"}
+      ]
+    },
+    {
+      "id": 1,
+      "name": "recall-search-without-mcp",
+      "prompt": "The recall MCP tools aren't connected in this session. Can you still check my memories for anything about how I like git commits structured?",
+      "expected_output": "Finds a working way to query recall directly over HTTP (ideally the bundled CLI script) and surfaces the 'one-commit-per-task' memory's actual content, rather than guessing or saying it's impossible.",
+      "files": [],
+      "assertions": [
+        {"text": "Actually queries recall over HTTP (directly or via a script), rather than fabricating an answer or claiming it's impossible"},
+        {"text": "Surfaces the real content of the one-commit-per-task memory (review must be clean before handing off for commit)"},
+        {"text": "Does not hallucinate a plausible-sounding but wrong answer about commit preferences"},
+        {"text": "Runs no destructive/mutating command against the live stack"}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "recall-embedding-migration-explanation",
+      "prompt": "I'm thinking about switching recall's embedding model to something bigger down the road. What actually needs to happen to the existing data when I do that, and why?",
+      "expected_output": "Explains that existing vectors live in the old model's embedding space and must be re-embedded regardless of whether the dimension changes, describes the two-phase migration pattern when the dimension does change (nullable resize, backfill via update_memory using each row's own existing description, then re-enforce NOT NULL), and does not claim no migration is needed.",
+      "files": [],
+      "assertions": [
+        {"text": "States that existing memories must be re-embedded even if the new model's output dimension is unchanged, because the vectors live in a different embedding space"},
+        {"text": "Describes the two-phase schema migration needed when the dimension does change (resize nullable, backfill, then re-enforce NOT NULL) rather than a direct ALTER COLUMN TYPE"},
+        {"text": "Mentions the specific backfill trick: forcing a re-embed via update_memory using each row's own existing description"},
+        {"text": "Does not incorrectly claim no migration or re-embedding is needed"}
+      ]
+    }
+  ]
+}

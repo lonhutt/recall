@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: recall
+      POSTGRES_PASSWORD: recall
+      POSTGRES_DB: recall
+    volumes:
+      - recall-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recall -d recall"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  embeddings:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    restart: unless-stopped
+    command: ["--host", "0.0.0.0", "--embd-gemma-default", "--embedding", "--port", "8091"]
+    environment:
+      HF_HOME: /cache
+    volumes:
+      - llama-embed-cache:/cache
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8091/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+  recall:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      embeddings:
+        condition: service_healthy
+    environment:
+      RECALL_DATABASE_URL: postgres://recall:recall@postgres:5432/recall?sslmode=disable
+      RECALL_EMBEDDING_BASE_URL: http://embeddings:8091
+      RECALL_EMBEDDING_MODEL: ggml-org/embeddinggemma-300M-qat-q4_0-GGUF
+      RECALL_EMBEDDING_QUERY_PREFIX: "task: search result | query: "
+      RECALL_EMBEDDING_DOCUMENT_PREFIX: "title: none | text: "
+      RECALL_TRANSPORT: http
+      RECALL_HTTP_PORT: "8092"
+      RECALL_HTTP_TOKEN: ${RECALL_HTTP_TOKEN}
+    ports:
+      - "127.0.0.1:8092:8092"
+
+volumes:
+  recall-pgdata:
+  llama-embed-cache:
