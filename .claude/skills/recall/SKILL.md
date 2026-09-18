@@ -1,6 +1,6 @@
 ---
 name: recall
-description: Operate and troubleshoot Recall, Lon's self-hosted MCP memory service (Postgres + pgvector + a local llama.cpp embedding model, all containerized in this repo). Use this whenever recall, the memory stack, or its MCP tools (save_memory, search_memory, list_memories, update_memory, delete_memory, log_event, list_events) come up in the context of this project — checking whether it's healthy, bringing it up or down, viewing logs, rotating the HTTP bearer token, running schema migrations, or re-embedding after switching the embedding model. Also use it to call recall's tools directly over HTTP via the bundled script whenever the recall MCP server isn't connected in the current Claude Code session. Trigger even on indirect phrasing like "is recall running", "recall seems broken", "check my memories for X" while working in this repo, or "I changed the embedding model, does existing data need to migrate" — not just literal mentions of "recall" or "MCP".
+description: Operate and troubleshoot Recall, Lon's self-hosted MCP memory service (Postgres + pgvector + a local llama.cpp embedding model, all containerized in this repo). Use this whenever recall, the memory stack, or its MCP tools (save_memory, search_memory, list_memories, update_memory, delete_memory, log_event, list_events) come up in the context of this project — checking whether it's healthy, bringing it up or down, viewing logs, rotating the HTTP bearer token, running schema migrations, or re-embedding after switching the embedding model. Also use it to call recall's tools directly over HTTP via the bundled script whenever the recall MCP server isn't connected in the current Claude Code session. Trigger even on indirect phrasing like "is recall running", "recall seems broken", "check my memories for X" while working in this repo, or "I changed the embedding model, does existing data need to migrate" — not just literal mentions of "recall" or "MCP". Also covers installing Recall from scratch on a machine that has never run it (asking for Docker group access, generating the bearer token, bringing the three containers up, registering the server in ~/.claude.json), so trigger on "set up recall", "install recall", "get recall running on this machine", or "recall isn't connected, can you wire it up".
 ---
 
 # Operating Recall
@@ -12,6 +12,98 @@ content ever leaves the machine), and `recall` itself, which is the only one
 of the three reachable from the host (`127.0.0.1:8092`, HTTP, bearer-token
 authenticated). `postgres` and `embeddings` are compose-internal only —
 that's intentional, not a bug, since `recall` is their sole consumer.
+
+## Installing on a machine that has never run it
+
+Only for a first-time setup; if `docker compose ps` already lists the three
+services, skip ahead to "Operating the stack".
+
+### 1. Check Docker access before anything else
+
+```sh
+docker info >/dev/null 2>&1 && echo ok
+```
+
+If that fails on permissions, the account isn't in the `docker` group in this
+session. Adding it needs sudo, so ask the user to run it rather than trying it
+yourself (they can prefix the command with `!` in the prompt to run it inline):
+
+```sh
+groups                              # is "docker" listed?
+sudo usermod -aG docker "$USER"     # only if it isn't
+```
+
+The non-obvious part: `/etc/group` can already show the membership while the
+running session still has stale groups; `groups` is what tells the two apart.
+A reboot is what actually took effect here; `newgrp docker` only fixes the one
+shell it runs in, which does the Claude Code session no good. So if `groups`
+looks stale, ask them to reboot and pick this back up afterward.
+
+### 2. Create .env
+
+```sh
+cp .env.example .env
+openssl rand -hex 32   # paste it in as RECALL_HTTP_TOKEN=
+```
+
+`.env` is gitignored. Along with `~/.claude.json` it's one of only two places
+the token lives, and the two have to match exactly or every call comes back 401.
+
+### 3. Bring the stack up
+
+```sh
+docker compose up -d --build
+docker compose ps
+```
+
+`embeddings` downloads EmbeddingGemma from Hugging Face on its first start, so
+it can sit in "starting" for a minute or more; that's the model pull, not a
+hang. `recall` waits on it and on `postgres` reporting healthy before it boots.
+Migrations apply on start (`RECALL_MIGRATE_ON_START` defaults to true), so
+there's no separate migrate step to run; `make migrate-up` couldn't reach the
+compose Postgres anyway, since that service publishes no host port.
+
+Once all three are healthy, check recall is really serving:
+
+```sh
+curl -sf http://127.0.0.1:8092/healthz && echo
+python3 .claude/skills/recall/scripts/recall_cli.py list_memories '{"limit": 1}'
+```
+
+Do both. `/healthz` is unauthenticated, so it only proves the process is up;
+the CLI call is what proves the token works.
+
+### 4. Register it with Claude Code
+
+This edits `~/.claude.json`, which is the user's global config and is about to
+hold a bearer token, so ask first and back it up:
+
+```sh
+cp ~/.claude.json ~/.claude.json.bak
+```
+
+Then add this to the top-level `mcpServers` object, alongside whatever entries
+are already there:
+
+```json
+"recall": {
+  "type": "http",
+  "url": "http://127.0.0.1:8092/mcp",
+  "headers": {
+    "Authorization": "Bearer <the RECALL_HTTP_TOKEN value from .env>"
+  }
+}
+```
+
+Nothing else in the file changes. `RECALL_TRANSPORT` stays `http` in
+`docker-compose.yml`; the stdio transport still exists in the binary but
+doesn't apply here, since a container isn't something Claude Code spawns.
+
+### 5. Restart Claude Code
+
+MCP servers connect at session start, so the seven tools won't show up until a
+new session; nothing is broken in the meantime. Until the restart,
+`recall_cli.py` is the way in (see "When they're not connected").
 
 ## When MCP tools are already connected
 

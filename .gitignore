@@ -7,6 +7,9 @@
 # build output
 bin/
 
+# python bytecode from the skill's cli script
+__pycache__/
+
 # go tooling: compiled test binaries, coverage profiles, local workspace files
 *.test
 *.out
