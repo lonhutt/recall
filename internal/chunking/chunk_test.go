@@ -93,13 +93,34 @@ func TestChunkFallsBackToWordsForAnOversizedSentence(t *testing.T) {
 }
 
 func TestChunkTerminatesOnAnIndivisibleOversizedWord(t *testing.T) {
-	text := "prefixword " + strings.Repeat("x", 50)
+	text := strings.Repeat("x", 50)
 	got, err := Chunk(context.Background(), text, 1, wordCounter)
 	if err != nil {
 		t.Fatalf("Chunk: %v", err)
 	}
-	if len(got) == 0 {
-		t.Fatal("Chunk() returned no chunks")
+	if len(got) != 1 || got[0] != text {
+		t.Errorf("Chunk() = %v, want the single indivisible run accepted as one oversized chunk", got)
+	}
+}
+
+// A paragraph or sentence with no '.'/'!'/'?' — a bullet-style line, a
+// run-on clause, a URL-heavy line — must still fall through to word-level
+// splitting rather than being treated as indivisible just because the
+// sentence-fallback tier found no punctuation to split on.
+func TestChunkFallsBackToWordsWhenParagraphHasNoSentencePunctuation(t *testing.T) {
+	text := strings.TrimSpace(strings.Repeat("word ", 20))
+	const maxTokens = 5
+	got, err := Chunk(context.Background(), text, maxTokens, wordCounter)
+	if err != nil {
+		t.Fatalf("Chunk: %v", err)
+	}
+	if len(got) < 2 {
+		t.Fatalf("Chunk() = %v, want the punctuation-free run split by word", got)
+	}
+	for i, c := range got {
+		if n, _ := wordCounter(context.Background(), c); n > maxTokens {
+			t.Errorf("chunk[%d] = %q has %d tokens, want <= %d", i, c, n, maxTokens)
+		}
 	}
 }
 

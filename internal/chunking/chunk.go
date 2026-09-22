@@ -33,6 +33,17 @@ func Chunk(ctx context.Context, text string, maxTokens int, counter TokenCounter
 	return pack(ctx, paragraphs, "\n\n", maxTokens, counter, splitSentences)
 }
 
+// fallbackOrUnchanged applies fallback to piece if given, returning
+// []string{piece} unchanged when fallback is nil or found no delimiter to
+// split on (so the caller can detect "no progress" uniformly and decide
+// whether to try the next fallback tier).
+func fallbackOrUnchanged(piece string, fallback func(string) []string) []string {
+	if fallback == nil {
+		return []string{piece}
+	}
+	return fallback(piece)
+}
+
 // pack greedily groups pieces into chunks joined by sep, each within
 // maxTokens. A piece that alone exceeds maxTokens is split further (via
 // fallback, or word-splitting if fallback is nil) before being packed.
@@ -57,17 +68,23 @@ func pack(ctx context.Context, pieces []string, sep string, maxTokens int, count
 
 		if pieceTokens > maxTokens {
 			flush()
-			var subPieces []string
-			if fallback != nil {
-				subPieces = fallback(piece)
-			} else {
+			// Try this tier's fallback first; if it finds no delimiter
+			// (returns the piece unchanged — e.g. no sentence-ending
+			// punctuation), fall through to word-splitting before
+			// declaring the piece indivisible. Conflating "this fallback
+			// found nothing" with "truly indivisible" would skip
+			// word-splitting even when the piece has plenty of spaces to
+			// split on.
+			subPieces := fallbackOrUnchanged(piece, fallback)
+			if len(subPieces) == 1 && subPieces[0] == piece {
 				subPieces = splitNonEmpty(piece, " ")
 			}
 			// A single indivisible run (e.g. one giant word with no
-			// spaces) can't be split further; accept it as one oversized
-			// chunk rather than recursing forever. Embed will still
-			// reject it if it's truly too big to embed — an honest
-			// failure, not silent data loss, since nothing here drops text.
+			// spaces) can't be split further even by word; accept it as
+			// one oversized chunk rather than recursing forever. Embed
+			// will still reject it if it's truly too big to embed — an
+			// honest failure, not silent data loss, since nothing here
+			// drops text.
 			if len(subPieces) == 1 && subPieces[0] == piece {
 				chunks = append(chunks, piece)
 				continue
