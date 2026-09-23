@@ -67,7 +67,7 @@ func serve(cfg *config.Config) error {
 	}
 	defer store.Close()
 
-	embedder := llamacpp.New(cfg.EmbeddingBaseURL, cfg.EmbeddingModel, cfg.EmbeddingQueryPrefix, cfg.EmbeddingDocumentPrefix)
+	embedder := llamacpp.New(cfg.EmbeddingBaseURL, cfg.EmbeddingModel, cfg.EmbeddingQueryPrefix, cfg.EmbeddingDocumentPrefix, cfg.EmbeddingMaxTokens)
 
 	t := &tools.Tools{Store: store, Embedder: embedder, EmbeddingModel: cfg.EmbeddingModel}
 	server := mcp.NewServer(&mcp.Implementation{Name: "recall", Version: "0.1.0"}, nil)

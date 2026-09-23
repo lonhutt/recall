@@ -9,7 +9,7 @@ func withEnv(t *testing.T, env map[string]string) {
 	t.Helper()
 	for _, k := range []string{
 		"RECALL_DATABASE_URL", "RECALL_EMBEDDING_BASE_URL", "RECALL_EMBEDDING_MODEL",
-		"RECALL_EMBEDDING_QUERY_PREFIX", "RECALL_EMBEDDING_DOCUMENT_PREFIX",
+		"RECALL_EMBEDDING_QUERY_PREFIX", "RECALL_EMBEDDING_DOCUMENT_PREFIX", "RECALL_EMBEDDING_MAX_TOKENS",
 		"RECALL_MIGRATE_ON_START", "RECALL_TRANSPORT", "RECALL_HTTP_PORT", "RECALL_HTTP_TOKEN",
 	} {
 		t.Setenv(k, env[k])
@@ -39,6 +39,9 @@ func TestLoadReturnsConfigWhenRequiredVarsSet(t *testing.T) {
 	}
 	if cfg.EmbeddingDocumentPrefix != "title: none | text: " {
 		t.Errorf("EmbeddingDocumentPrefix = %q, want EmbeddingGemma's default document prefix", cfg.EmbeddingDocumentPrefix)
+	}
+	if cfg.EmbeddingMaxTokens != 2048 {
+		t.Errorf("EmbeddingMaxTokens = %d, want EmbeddingGemma's default context window of 2048", cfg.EmbeddingMaxTokens)
 	}
 	if !cfg.MigrateOnStart {
 		t.Errorf("MigrateOnStart = false, want default true")
@@ -87,6 +90,32 @@ func TestLoadHonorsEmbeddingOverrides(t *testing.T) {
 	}
 	if cfg.EmbeddingDocumentPrefix != "search_document: " {
 		t.Errorf("EmbeddingDocumentPrefix = %q, want search_document: ", cfg.EmbeddingDocumentPrefix)
+	}
+}
+
+func TestLoadHonorsEmbeddingMaxTokensOverride(t *testing.T) {
+	withEnv(t, map[string]string{
+		"RECALL_DATABASE_URL":         "postgres://localhost/recall",
+		"RECALL_EMBEDDING_MAX_TOKENS": "512",
+	})
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.EmbeddingMaxTokens != 512 {
+		t.Errorf("EmbeddingMaxTokens = %d, want 512", cfg.EmbeddingMaxTokens)
+	}
+}
+
+func TestLoadRejectsInvalidEmbeddingMaxTokens(t *testing.T) {
+	withEnv(t, map[string]string{
+		"RECALL_DATABASE_URL":         "postgres://localhost/recall",
+		"RECALL_EMBEDDING_MAX_TOKENS": "not-a-number",
+	})
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected an error for an invalid RECALL_EMBEDDING_MAX_TOKENS, got nil")
 	}
 }
 
