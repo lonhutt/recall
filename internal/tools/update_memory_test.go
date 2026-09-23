@@ -21,7 +21,7 @@ func seedMemory(t *testing.T, store *fakeStore, embedder *fakeEmbedder, tools *T
 func TestUpdateMemoryPatchesOnlyGivenFields(t *testing.T) {
 	store := newFakeStore()
 	embedder := &fakeEmbedder{vector: []float32{1}}
-	tools := &Tools{Store: store, Embedder: embedder}
+	tools := &Tools{Store: store, Embedder: embedder, MaxTokensPerChunk: 2048}
 	seedMemory(t, store, embedder, tools)
 
 	newDesc := "new desc"
@@ -37,12 +37,12 @@ func TestUpdateMemoryPatchesOnlyGivenFields(t *testing.T) {
 	}
 }
 
-func TestUpdateMemoryReembedsOnBodyOrDescriptionChange(t *testing.T) {
+func TestUpdateMemoryReembedsBodyAloneWhenOnlyBodyChanges(t *testing.T) {
 	store := newFakeStore()
 	embedder := &fakeEmbedder{vector: []float32{1}}
-	tools := &Tools{Store: store, Embedder: embedder}
+	tools := &Tools{Store: store, Embedder: embedder, MaxTokensPerChunk: 2048}
 	seedMemory(t, store, embedder, tools)
-	embedder.calls = 0 // reset after the seed's own save_memory embed call
+	embedder.calls = 0
 
 	newBody := "new body"
 	_, _, err := tools.UpdateMemory(context.Background(), nil, UpdateMemoryArgs{Slug: "seeded", Body: &newBody})
@@ -50,21 +50,40 @@ func TestUpdateMemoryReembedsOnBodyOrDescriptionChange(t *testing.T) {
 		t.Fatalf("UpdateMemory: %v", err)
 	}
 	if embedder.calls != 1 {
-		t.Errorf("embedder called %d times, want 1", embedder.calls)
+		t.Errorf("embedder called %d times, want 1 (body chunk only; description unchanged)", embedder.calls)
 	}
 	if embedder.lastKind != embeddings.InputTypeDocument {
 		t.Errorf("embedder kind = %q, want document", embedder.lastKind)
 	}
-	// Must re-embed the merged text (unchanged description + new body), not just the changed field.
-	if len(embedder.lastTexts) != 1 || embedder.lastTexts[0] != "old desc\n\nnew body" {
-		t.Errorf("embedder texts = %v, want merged text", embedder.lastTexts)
+	if len(embedder.lastTexts) != 1 || embedder.lastTexts[0] != "new body" {
+		t.Errorf("embedder texts = %v, want just the new body, not merged with description", embedder.lastTexts)
+	}
+}
+
+func TestUpdateMemoryReembedsDescriptionAloneWhenOnlyDescriptionChanges(t *testing.T) {
+	store := newFakeStore()
+	embedder := &fakeEmbedder{vector: []float32{1}}
+	tools := &Tools{Store: store, Embedder: embedder, MaxTokensPerChunk: 2048}
+	seedMemory(t, store, embedder, tools)
+	embedder.calls = 0
+
+	newDesc := "new desc"
+	_, _, err := tools.UpdateMemory(context.Background(), nil, UpdateMemoryArgs{Slug: "seeded", Description: &newDesc})
+	if err != nil {
+		t.Fatalf("UpdateMemory: %v", err)
+	}
+	if embedder.calls != 1 {
+		t.Errorf("embedder called %d times, want 1 (description only; body unchanged)", embedder.calls)
+	}
+	if len(embedder.lastTexts) != 1 || embedder.lastTexts[0] != "new desc" {
+		t.Errorf("embedder texts = %v, want just the new description", embedder.lastTexts)
 	}
 }
 
 func TestUpdateMemorySkipsEmbeddingWhenNeitherDescriptionNorBodyChange(t *testing.T) {
 	store := newFakeStore()
 	embedder := &fakeEmbedder{vector: []float32{1}}
-	tools := &Tools{Store: store, Embedder: embedder}
+	tools := &Tools{Store: store, Embedder: embedder, MaxTokensPerChunk: 2048}
 	seedMemory(t, store, embedder, tools)
 	embedder.calls = 0
 
@@ -75,6 +94,44 @@ func TestUpdateMemorySkipsEmbeddingWhenNeitherDescriptionNorBodyChange(t *testin
 	}
 	if embedder.calls != 0 {
 		t.Errorf("embedder called %d times, want 0", embedder.calls)
+	}
+}
+
+// A row's embedding_model stamp has to describe both of its vectors. If the
+// configured model changed since the row was written, re-embedding only the
+// field the caller touched would leave the other vector in the old model's
+// space under the new model's name — exactly what search_memory's
+// embedding_model filter exists to make impossible.
+func TestUpdateMemoryReembedsBothFieldsWhenTheModelChanged(t *testing.T) {
+	store := newFakeStore()
+	embedder := &fakeEmbedder{vector: []float32{1}}
+	tools := &Tools{Store: store, Embedder: embedder, EmbeddingModel: "old-model", MaxTokensPerChunk: 2048}
+	seedMemory(t, store, embedder, tools)
+
+	tools.EmbeddingModel = "new-model"
+	embedder.calls = 0
+	embedder.allCalls = nil
+	store.lastChunks = nil
+
+	newProject := "recall"
+	_, _, err := tools.UpdateMemory(context.Background(), nil, UpdateMemoryArgs{Slug: "seeded", Project: &newProject})
+	if err != nil {
+		t.Fatalf("UpdateMemory: %v", err)
+	}
+	if embedder.calls != 2 {
+		t.Fatalf("embedder called %d times, want 2 (description and body both re-embedded under the new model): %+v", embedder.calls, embedder.allCalls)
+	}
+	if len(embedder.allCalls[0].texts) != 1 || embedder.allCalls[0].texts[0] != "old desc" {
+		t.Errorf("first embed call = %v, want the existing description re-embedded", embedder.allCalls[0].texts)
+	}
+	if len(embedder.allCalls[1].texts) != 1 || embedder.allCalls[1].texts[0] != "old body" {
+		t.Errorf("second embed call = %v, want the existing body re-embedded", embedder.allCalls[1].texts)
+	}
+	if len(store.lastChunks) == 0 {
+		t.Error("store got no chunks, want the body re-chunked under the new model")
+	}
+	if got := store.bySlug["seeded"].EmbeddingModel; got != "new-model" {
+		t.Errorf("stored EmbeddingModel = %q, want %q", got, "new-model")
 	}
 }
 
@@ -91,7 +148,7 @@ func TestUpdateMemoryNotFoundReturnsFriendlyError(t *testing.T) {
 func TestUpdateMemoryRejectsUnknownType(t *testing.T) {
 	store := newFakeStore()
 	embedder := &fakeEmbedder{vector: []float32{1}}
-	tools := &Tools{Store: store, Embedder: embedder}
+	tools := &Tools{Store: store, Embedder: embedder, MaxTokensPerChunk: 2048}
 	seedMemory(t, store, embedder, tools)
 
 	bogus := "bogus"
@@ -104,7 +161,7 @@ func TestUpdateMemoryRejectsUnknownType(t *testing.T) {
 func TestUpdateMemoryWrapsEmbeddingFailure(t *testing.T) {
 	store := newFakeStore()
 	seedEmbedder := &fakeEmbedder{vector: []float32{1}}
-	tools := &Tools{Store: store, Embedder: seedEmbedder}
+	tools := &Tools{Store: store, Embedder: seedEmbedder, MaxTokensPerChunk: 2048}
 	seedMemory(t, store, seedEmbedder, tools)
 
 	embedFailure := errors.New("llama.cpp server returned 500")

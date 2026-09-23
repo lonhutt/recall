@@ -40,6 +40,12 @@ func run() error {
 			return fmt.Errorf("missing required environment variable: RECALL_DATABASE_URL")
 		}
 		return postgres.RunMigrations(dbURL)
+	case "backfill-chunks":
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		return backfillChunks(cfg)
 	case "serve":
 		cfg, err := config.Load()
 		if err != nil {
@@ -47,8 +53,56 @@ func run() error {
 		}
 		return serve(cfg)
 	default:
-		return fmt.Errorf("unknown command %q; expected \"serve\" or \"migrate\"", cmd)
+		return fmt.Errorf("unknown command %q; expected \"serve\", \"migrate\", or \"backfill-chunks\"", cmd)
 	}
+}
+
+// backfillChunks re-embeds every existing memory's description and body
+// chunks under the current chunked-search scheme. Safe to run more than
+// once: each run fully replaces the previous chunk set.
+//
+// Each memory's update is its own transaction, so running this won't
+// corrupt data or block serving — but a memory created concurrently during
+// the run can shift pagination and cause one untouched row to be skipped,
+// so prefer running it during a quiet window, and re-run it (safe, since
+// it's idempotent) if you suspect stragglers.
+func backfillChunks(cfg *config.Config) error {
+	ctx := context.Background()
+
+	store, err := postgres.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	embedder := llamacpp.New(cfg.EmbeddingBaseURL, cfg.EmbeddingModel, cfg.EmbeddingQueryPrefix, cfg.EmbeddingDocumentPrefix, cfg.EmbeddingMaxTokens)
+	t := &tools.Tools{
+		Store:             store,
+		Embedder:          embedder,
+		EmbeddingModel:    cfg.EmbeddingModel,
+		MaxTokensPerChunk: cfg.EmbeddingMaxTokens,
+		DocumentPrefix:    cfg.EmbeddingDocumentPrefix,
+	}
+
+	const pageSize = 50
+	offset := 0
+	for {
+		memories, err := store.ListMemories(ctx, postgres.MemoryFilter{}, pageSize, offset)
+		if err != nil {
+			return fmt.Errorf("listing memories: %w", err)
+		}
+		if len(memories) == 0 {
+			break
+		}
+		for _, m := range memories {
+			if err := t.BackfillMemoryEmbedding(ctx, m.Slug, m.Description, m.Body); err != nil {
+				return fmt.Errorf("backfilling %q: %w", m.Slug, err)
+			}
+			slog.Info("backfilled memory chunks", "slug", m.Slug)
+		}
+		offset += len(memories)
+	}
+	return nil
 }
 
 func serve(cfg *config.Config) error {
@@ -69,7 +123,13 @@ func serve(cfg *config.Config) error {
 
 	embedder := llamacpp.New(cfg.EmbeddingBaseURL, cfg.EmbeddingModel, cfg.EmbeddingQueryPrefix, cfg.EmbeddingDocumentPrefix, cfg.EmbeddingMaxTokens)
 
-	t := &tools.Tools{Store: store, Embedder: embedder, EmbeddingModel: cfg.EmbeddingModel}
+	t := &tools.Tools{
+		Store:             store,
+		Embedder:          embedder,
+		EmbeddingModel:    cfg.EmbeddingModel,
+		MaxTokensPerChunk: cfg.EmbeddingMaxTokens,
+		DocumentPrefix:    cfg.EmbeddingDocumentPrefix,
+	}
 	server := mcp.NewServer(&mcp.Implementation{Name: "recall", Version: "0.1.0"}, nil)
 	t.RegisterAll(server)
 

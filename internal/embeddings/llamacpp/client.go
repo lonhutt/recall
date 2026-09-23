@@ -141,28 +141,51 @@ func (c *Client) Embed(ctx context.Context, texts []string, kind embeddings.Inpu
 
 // CountTokens returns how many tokens the server's own tokenizer produces
 // for text — the exact count the embeddings endpoint will see, not an
-// estimate, since it tokenizes the identical string Embed sends it.
+// estimate, since it tokenizes the identical string Embed sends it. It
+// retries transient failures the same way Embed does, so a text that has
+// to be tokenized before every embed call (whenever maxTokens > 0) doesn't
+// make the whole operation less resilient than it was before that check
+// existed.
 func (c *Client) CountTokens(ctx context.Context, text string) (int, error) {
 	body, err := json.Marshal(tokenizeRequest{Content: text})
 	if err != nil {
 		return 0, fmt.Errorf("marshaling llama.cpp tokenize request: %w", err)
 	}
 
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		n, retriable, err := c.doCountTokens(ctx, body)
+		if err == nil {
+			return n, nil
+		}
+		lastErr = err
+		if !retriable || attempt >= len(c.backoff) {
+			return 0, lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(c.backoff[attempt]):
+		}
+	}
+}
+
+func (c *Client) doCountTokens(ctx context.Context, body []byte) (int, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+tokenizePath, bytes.NewReader(body))
 	if err != nil {
-		return 0, fmt.Errorf("building llama.cpp tokenize request: %w", err)
+		return 0, false, fmt.Errorf("building llama.cpp tokenize request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("calling llama.cpp tokenize endpoint: %w", err)
+		return 0, true, fmt.Errorf("calling llama.cpp tokenize endpoint: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, fmt.Errorf("reading llama.cpp tokenize response: %w", err)
+		return 0, true, fmt.Errorf("reading llama.cpp tokenize response: %w", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -170,14 +193,15 @@ func (c *Client) CountTokens(ctx context.Context, text string) (int, error) {
 			Detail string `json:"detail"`
 		}
 		_ = json.Unmarshal(respBody, &errBody)
-		return 0, &APIError{StatusCode: resp.StatusCode, Detail: errBody.Detail}
+		apiErr := &APIError{StatusCode: resp.StatusCode, Detail: errBody.Detail}
+		return 0, resp.StatusCode >= 500, apiErr
 	}
 
 	var parsed tokenizeResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return 0, fmt.Errorf("decoding llama.cpp tokenize response: %w", err)
+		return 0, false, fmt.Errorf("decoding llama.cpp tokenize response: %w", err)
 	}
-	return len(parsed.Tokens), nil
+	return len(parsed.Tokens), false, nil
 }
 
 func (c *Client) doEmbed(ctx context.Context, body []byte, want int) ([][]float32, bool, error) {

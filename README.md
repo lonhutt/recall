@@ -84,8 +84,9 @@ The following are exposed as MCP tools:
 - Embedding dimension is fixed at `models.EmbeddingDimension` (768, matching
   EmbeddingGemma's native output). Changing the embedding model or
   dimension requires a new migration (`ALTER TABLE ... ALTER COLUMN
-  embedding TYPE vector(N)`) and re-embedding every existing row; there's
-  no tooling for that yet.
+  embedding TYPE vector(N)`) and re-embedding every existing row — run
+  `recall backfill-chunks` (or, in the compose setup, `docker compose exec
+  recall /recall backfill-chunks`) once after applying the migration.
 - `slug` is globally unique across all memories (one flat namespace, not
   scoped per project).
 - The embedding server is a separate `llama-server` instance from any

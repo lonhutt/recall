@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"strings"
+	"testing"
 
 	"github.com/lonhutt/recall/internal/embeddings"
 	"github.com/lonhutt/recall/internal/models"
@@ -21,6 +23,7 @@ type fakeStore struct {
 	searchErr  error
 	lastLimit  int
 	lastFilter postgres.MemoryFilter
+	lastChunks []postgres.MemoryChunk
 }
 
 func newFakeStore() *fakeStore {
@@ -31,6 +34,7 @@ func (f *fakeStore) CreateMemory(_ context.Context, m postgres.NewMemory) (*mode
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
+	f.lastChunks = m.Chunks
 	if _, exists := f.bySlug[m.Slug]; exists {
 		return nil, models.ErrDuplicateSlug
 	}
@@ -45,6 +49,9 @@ func (f *fakeStore) CreateMemory(_ context.Context, m postgres.NewMemory) (*mode
 func (f *fakeStore) UpdateMemory(_ context.Context, slug string, p postgres.MemoryPatch) (*models.Memory, error) {
 	if f.updateErr != nil {
 		return nil, f.updateErr
+	}
+	if p.Chunks != nil {
+		f.lastChunks = *p.Chunks
 	}
 	mem, ok := f.bySlug[slug]
 	if !ok {
@@ -151,19 +158,30 @@ func (f *fakeStore) ListLogEvents(_ context.Context, _ postgres.EventFilter, _, 
 	return f.events, nil
 }
 
+// embedCall records one Embed invocation, for tests that need to assert on
+// more than just the most recent call (e.g. a tool call that embeds a
+// description and then, separately, one or more body chunks).
+type embedCall struct {
+	texts []string
+	kind  embeddings.InputType
+}
+
 // fakeEmbedder is an Embedder double returning a fixed vector (or error) per call.
 type fakeEmbedder struct {
-	vector    []float32
-	err       error
-	lastKind  embeddings.InputType
-	lastTexts []string
-	calls     int
+	vector        []float32
+	err           error
+	lastKind      embeddings.InputType
+	lastTexts     []string
+	calls         int
+	allCalls      []embedCall
+	countTokensFn func(text string) (int, error)
 }
 
 func (f *fakeEmbedder) Embed(_ context.Context, texts []string, kind embeddings.InputType) ([][]float32, error) {
 	f.calls++
 	f.lastTexts = texts
 	f.lastKind = kind
+	f.allCalls = append(f.allCalls, embedCall{texts: texts, kind: kind})
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -172,4 +190,19 @@ func (f *fakeEmbedder) Embed(_ context.Context, texts []string, kind embeddings.
 		vectors[i] = f.vector
 	}
 	return vectors, nil
+}
+
+// CountTokens is a fake tokenizer for tests: one token per word, so tests
+// needing deterministic chunk boundaries can reason about expected output
+// without a real tokenizer. countTokensFn overrides this when a test needs
+// specific counts.
+func (f *fakeEmbedder) CountTokens(_ context.Context, text string) (int, error) {
+	if f.countTokensFn != nil {
+		return f.countTokensFn(text)
+	}
+	return len(strings.Fields(text)), nil
+}
+
+func TestFakeEmbedderSatisfiesWidenedEmbedderInterface(t *testing.T) {
+	var _ Embedder = (*fakeEmbedder)(nil)
 }

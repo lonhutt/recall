@@ -212,6 +212,54 @@ func TestEmbedRejectsDuplicateIndex(t *testing.T) {
 	}
 }
 
+func TestCountTokensRetriesOnServerErrorThenSucceeds(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{"detail": "loading model"})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"tokens": []int{1, 2, 3}})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix, 0)
+	c.backoff = []time.Duration{time.Millisecond, time.Millisecond}
+
+	n, err := c.CountTokens(context.Background(), "x")
+	if err != nil {
+		t.Fatalf("CountTokens returned error after retry: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("attempts = %d, want 2", attempts)
+	}
+	if n != 3 {
+		t.Errorf("CountTokens() = %d, want 3", n)
+	}
+}
+
+func TestCountTokensDoesNotRetryOnClientError(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"detail": "bad request"})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix, 0)
+	c.backoff = []time.Duration{time.Millisecond, time.Millisecond}
+
+	if _, err := c.CountTokens(context.Background(), "x"); err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want 1 (a 4xx should not be retried)", attempts)
+	}
+}
+
 func TestCountTokensParsesResponse(t *testing.T) {
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

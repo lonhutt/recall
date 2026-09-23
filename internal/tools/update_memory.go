@@ -7,7 +7,6 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/lonhutt/recall/internal/embeddings"
 	"github.com/lonhutt/recall/internal/models"
 	"github.com/lonhutt/recall/internal/store/postgres"
 )
@@ -50,23 +49,44 @@ func (t *Tools) UpdateMemory(ctx context.Context, _ *mcp.CallToolRequest, a Upda
 		Tags:        a.Tags,
 	}
 
-	// Recall owns embedding-space consistency: any change to the text that
-	// gets embedded re-embeds the full merged text, never leaving a stale vector.
-	if a.Description != nil || a.Body != nil {
-		desc, body := existing.Description, existing.Body
+	// Description and body embed independently: each is only re-embedded
+	// when the caller actually changed it, not both whenever either changes.
+	//
+	// The exception is a configured embedding model that no longer matches
+	// the one this row was embedded with. Then both fields are re-embedded
+	// even if the caller touched one or neither — otherwise the row would
+	// end up stamped with the new model name while one of its two vectors
+	// is still from the old model, and search_memory's embedding_model
+	// filter exists precisely to prevent ever comparing vectors across
+	// models.
+	modelChanged := existing.EmbeddingModel != t.EmbeddingModel
+	reembedDescription := a.Description != nil || modelChanged
+	reembedBody := a.Body != nil || modelChanged
+
+	if reembedDescription || reembedBody {
+		patch.EmbeddingModel = &t.EmbeddingModel
+	}
+	if reembedDescription {
+		desc := existing.Description
 		if a.Description != nil {
 			desc = *a.Description
 		}
+		vec, err := t.embedDescription(ctx, desc)
+		if err != nil {
+			return nil, UpdateMemoryResult{}, fmt.Errorf("generating description embedding: %w", err)
+		}
+		patch.Embedding = vec
+	}
+	if reembedBody {
+		body := existing.Body
 		if a.Body != nil {
 			body = *a.Body
 		}
-
-		vectors, err := t.Embedder.Embed(ctx, []string{desc + "\n\n" + body}, embeddings.InputTypeDocument)
+		chunks, err := t.chunkAndEmbedBody(ctx, body)
 		if err != nil {
-			return nil, UpdateMemoryResult{}, fmt.Errorf("generating embedding: %w", err)
+			return nil, UpdateMemoryResult{}, fmt.Errorf("generating body chunk embeddings: %w", err)
 		}
-		patch.Embedding = vectors[0]
-		patch.EmbeddingModel = &t.EmbeddingModel
+		patch.Chunks = &chunks
 	}
 
 	updated, err := t.Store.UpdateMemory(ctx, a.Slug, patch)
