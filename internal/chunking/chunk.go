@@ -60,6 +60,14 @@ func pack(ctx context.Context, pieces []string, sep string, maxTokens int, count
 		}
 	}
 
+	// sep is fixed for the whole call, so count it once: counter is an HTTP
+	// round-trip in production, and counting it per piece would cost one
+	// request per word for a body that falls to word-level splitting.
+	sepTokens, err := counter(ctx, sep)
+	if err != nil {
+		return nil, fmt.Errorf("counting tokens: %w", err)
+	}
+
 	for _, piece := range pieces {
 		pieceTokens, err := counter(ctx, piece)
 		if err != nil {
@@ -97,18 +105,16 @@ func pack(ctx context.Context, pieces []string, sep string, maxTokens int, count
 			continue
 		}
 
-		sepTokens := 0
+		// there's no separator before the first piece of a chunk.
+		sepCost := 0
 		if len(current) > 0 {
-			sepTokens, err = counter(ctx, sep)
-			if err != nil {
-				return nil, fmt.Errorf("counting tokens: %w", err)
-			}
+			sepCost = sepTokens
 		}
-		if len(current) > 0 && currentTokens+sepTokens+pieceTokens > maxTokens {
+		if len(current) > 0 && currentTokens+sepCost+pieceTokens > maxTokens {
 			flush()
 		}
 		current = append(current, piece)
-		currentTokens += sepTokens + pieceTokens
+		currentTokens += sepCost + pieceTokens
 	}
 	flush()
 	return chunks, nil

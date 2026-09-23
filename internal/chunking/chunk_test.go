@@ -13,6 +13,15 @@ func wordCounter(_ context.Context, text string) (int, error) {
 	return len(strings.Fields(text)), nil
 }
 
+// charCounter is a fake TokenCounter that counts every character as one
+// token — unlike wordCounter, it can report more than 1 token for a single
+// space-free run, which is what's needed to actually exercise pack()'s
+// "genuinely indivisible" branch (a whitespace-based counter can never see
+// a space-free run as oversized, since it always counts as 1 token).
+func charCounter(_ context.Context, text string) (int, error) {
+	return len(text), nil
+}
+
 func TestChunkReturnsTextUnchangedWhenWithinBudget(t *testing.T) {
 	got, err := Chunk(context.Background(), "one two three", 10, wordCounter)
 	if err != nil {
@@ -92,14 +101,64 @@ func TestChunkFallsBackToWordsForAnOversizedSentence(t *testing.T) {
 	}
 }
 
-func TestChunkTerminatesOnAnIndivisibleOversizedWord(t *testing.T) {
+// A long space-free run is one token to a whitespace-based counter, so this
+// exits at Chunk's "already fits" check and never reaches pack(). The test
+// below it is the one that exercises pack()'s indivisible branch.
+func TestChunkReturnsTextUnchangedWhenTheCounterSeesItAsOneToken(t *testing.T) {
 	text := strings.Repeat("x", 50)
 	got, err := Chunk(context.Background(), text, 1, wordCounter)
 	if err != nil {
 		t.Fatalf("Chunk: %v", err)
 	}
 	if len(got) != 1 || got[0] != text {
-		t.Errorf("Chunk() = %v, want the single indivisible run accepted as one oversized chunk", got)
+		t.Errorf("Chunk() = %v, want the text returned unchanged", got)
+	}
+}
+
+// A run with nothing to split on — no paragraph break, no sentence
+// punctuation, no spaces — that a counter genuinely reports as oversized
+// must be accepted as one oversized chunk rather than recursing forever or
+// dropping text.
+func TestChunkAcceptsAGenuinelyIndivisibleRunAsOneOversizedChunk(t *testing.T) {
+	text := strings.Repeat("x", 50)
+	got, err := Chunk(context.Background(), text, 10, charCounter)
+	if err != nil {
+		t.Fatalf("Chunk: %v", err)
+	}
+	if len(got) != 1 || got[0] != text {
+		t.Errorf("Chunk() = %v, want the single indivisible run accepted as one oversized chunk despite exceeding maxTokens", got)
+	}
+}
+
+// pack() must tokenize its separator once per call, not once per piece: in
+// production counter is an HTTP round-trip to llama.cpp, so counting the
+// separator inside the loop costs an extra request per word for a body that
+// falls all the way to word-level splitting.
+func TestChunkCountsTheSeparatorOncePerPackCall(t *testing.T) {
+	text := strings.Repeat("word ", 500)
+	sepCalls := 0
+	counting := func(ctx context.Context, s string) (int, error) {
+		// only separators are whitespace-only here; splitNonEmpty drops
+		// blank pieces, and the full text isn't blank.
+		if strings.TrimSpace(s) == "" {
+			sepCalls++
+		}
+		return wordCounter(ctx, s)
+	}
+
+	got, err := Chunk(context.Background(), text, 20, counting)
+	if err != nil {
+		t.Fatalf("Chunk: %v", err)
+	}
+	if len(got) < 2 {
+		t.Fatalf("Chunk() = %d chunks, want the long run split into several", len(got))
+	}
+	// One call per pack() invocation, and pack() recurses only as deep as
+	// the fallback tiers go (paragraphs, sentences, words) — a handful,
+	// independent of the 500 pieces. Counting per piece instead would be
+	// ~475 calls here, one for every piece appended to a non-empty chunk.
+	if sepCalls > 5 {
+		t.Errorf("counter called %d times for a separator, want one per pack() call (a handful), not one per piece", sepCalls)
 	}
 }
 

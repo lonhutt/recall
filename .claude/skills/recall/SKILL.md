@@ -193,9 +193,14 @@ application-level step in between:
 
 1. Migration N: drop the column, re-add it nullable at the new
    width/type, dropping any index on it.
-2. Backfill every row at the application level — the trick is calling
-   `update_memory` with each row's *own existing* `description`, which
-   forces a re-embed without changing any content.
+2. Backfill every row at the application level — run `recall
+   backfill-chunks` (in the compose setup, `docker compose exec recall
+   /recall backfill-chunks`), which re-embeds both the description vector
+   and the body chunks for every memory without changing any content. It's
+   idempotent, so re-running it is safe. (The old trick of calling
+   `update_memory` with a row's own existing `description` no longer
+   suffices: it only refreshes the description vector and leaves the row
+   with no `memory_chunks` at all.)
 3. Migration N+1: `SET NOT NULL`, rebuild the index.
 
 Do it in that order specifically — never write both migrations up front and
@@ -209,8 +214,9 @@ If `RECALL_EMBEDDING_MODEL`/the `embeddings` container's model ever changes
 again, existing memories' vectors are in the *old* model's embedding space —
 cosine similarity between an old vector and a new query vector is
 meaningless, even if the dimension happens to match. Existing data needs the
-same backfill step from the migrations section above (re-embed every row via
-`update_memory`), whether or not the dimension itself changed.
+same backfill step from the migrations section above (`recall
+backfill-chunks`, which re-embeds every row's description and body chunks),
+whether or not the dimension itself changed.
 
 Two other things change with the model, neither of which is a data problem:
 

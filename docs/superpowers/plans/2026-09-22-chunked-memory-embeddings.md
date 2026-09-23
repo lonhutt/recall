@@ -360,7 +360,7 @@ git commit -m "add token-aware text chunking package"
 
 **Interfaces:**
 - Consumes: `(*llamacpp.Client).CountTokens` already exists (shipped in the preflight-check fix) and satisfies the new interface method with no changes to `internal/embeddings/llamacpp`.
-- Produces: `Embedder` interface gains `CountTokens(ctx context.Context, text string) (int, error)`; `fakeEmbedder` gains a matching method plus per-call history (`allCalls`) for tests that need to distinguish multiple `Embed` calls in one tool invocation; `fakeStore` gains `lastChunks []postgres.MemoryChunk` for tests that need to inspect what chunks a save/update produced.
+- Produces: `Embedder` interface gains `CountTokens(ctx context.Context, text string) (int, error)`; `fakeEmbedder` gains a matching method plus per-call history (`allCalls`) for tests that need to distinguish multiple `Embed` calls in one tool invocation. (`fakeStore.lastChunks` is deferred to Task 5 — it needs `postgres.MemoryChunk`, which doesn't exist until Task 3, so it can't land here; Task 5 is where a test first actually consumes it.)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -390,18 +390,10 @@ type Embedder interface {
 
 ```go
 // internal/tools/fakes_test.go — add "strings" to imports,
-// add lastChunks to fakeStore, add CountTokens + allCalls to fakeEmbedder
-
-// add to the fakeStore struct's field list:
-	lastChunks []postgres.MemoryChunk
-
-// in fakeStore.CreateMemory, right after the createErr check:
-	f.lastChunks = m.Chunks
-
-// in fakeStore.UpdateMemory, right after the updateErr check:
-	if p.Chunks != nil {
-		f.lastChunks = *p.Chunks
-	}
+// add CountTokens + allCalls to fakeEmbedder
+// (fakeStore.lastChunks is NOT added here — postgres.MemoryChunk doesn't
+// exist until Task 3, and nothing in this task's scope consumes it; Task 5
+// adds it, at the point something actually needs it.)
 
 // embedCall records one Embed invocation, for tests that need to assert on
 // more than just the most recent call (e.g. a tool call that embeds a
@@ -1023,7 +1015,12 @@ func (s *Store) SearchMemories(ctx context.Context, embedding []float32, f Memor
 		best[id] = score
 	}
 	for id, score := range chunkScores {
-		if score > best[id] {
+		// best[id] on a missing key silently returns 0.0, not "absent" —
+		// checking existence explicitly matters because cosine scores can
+		// be negative; without it, a memory found only via a chunk with a
+		// negative score would compare against the zero value and never
+		// make it into best at all.
+		if cur, ok := best[id]; !ok || score > cur {
 			best[id] = score
 		}
 	}
@@ -1106,11 +1103,12 @@ git commit -m "rank search results by best of description or body-chunk match"
 - Modify: `internal/tools/save_memory_test.go`
 - Modify: `internal/tools/update_memory_test.go`
 - Modify: `internal/tools/e2e_test.go`
+- Modify: `internal/tools/fakes_test.go`
 - Modify: `cmd/recall/main.go`
 
 **Interfaces:**
 - Consumes: `chunking.Chunk` (Task 1), `Embedder.CountTokens` (Task 2), `postgres.NewMemory.Chunks` / `postgres.MemoryPatch.Chunks` (Task 3).
-- Produces: `(*Tools).embedDescription(ctx, description string) ([]float32, error)` and `(*Tools).chunkAndEmbedBody(ctx, body string) ([]postgres.MemoryChunk, error)` — both used again by Task 6's backfill command.
+- Produces: `(*Tools).embedDescription(ctx, description string) ([]float32, error)` and `(*Tools).chunkAndEmbedBody(ctx, body string) ([]postgres.MemoryChunk, error)` — both used again by Task 6's backfill command. Also adds `fakeStore.lastChunks []postgres.MemoryChunk` (deferred here from Task 2, which predates `postgres.MemoryChunk`'s existence — see Task 2's Interfaces note) for this task's own tests to inspect what chunks a save/update produced.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1279,6 +1277,24 @@ type Tools struct {
 	EmbeddingModel    string
 	MaxTokensPerChunk int
 }
+```
+
+```go
+// internal/tools/fakes_test.go — add lastChunks to fakeStore, deferred from
+// Task 2 (postgres.MemoryChunk didn't exist there yet); this task's own
+// tests (TestSaveMemoryChunksAnOversizedBody, and Task 6's backfill tests)
+// are the first to actually consume it.
+
+// add to the fakeStore struct's field list:
+	lastChunks []postgres.MemoryChunk
+
+// in fakeStore.CreateMemory, right after the createErr check:
+	f.lastChunks = m.Chunks
+
+// in fakeStore.UpdateMemory, right after the updateErr check:
+	if p.Chunks != nil {
+		f.lastChunks = *p.Chunks
+	}
 ```
 
 ```go
@@ -1511,7 +1527,7 @@ Expected: PASS (or SKIP if Docker isn't reachable — check `docker ps` first).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/tools/embed.go internal/tools/deps.go internal/tools/save_memory.go internal/tools/update_memory.go internal/tools/save_memory_test.go internal/tools/update_memory_test.go internal/tools/e2e_test.go cmd/recall/main.go
+git add internal/tools/embed.go internal/tools/deps.go internal/tools/save_memory.go internal/tools/update_memory.go internal/tools/save_memory_test.go internal/tools/update_memory_test.go internal/tools/e2e_test.go internal/tools/fakes_test.go cmd/recall/main.go
 git commit -m "embed description and body chunks independently in save/update_memory"
 ```
 

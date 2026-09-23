@@ -99,3 +99,92 @@ func TestSearchMemoriesExcludesOtherEmbeddingModels(t *testing.T) {
 		t.Errorf("result = %q, want current-model-note", results[0].Slug)
 	}
 }
+
+func TestSearchMemoriesFindsMatchViaBodyChunkNotJustDescription(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	// "long-memory" only matches the query through its second chunk; its
+	// description embedding points elsewhere entirely.
+	_, err := store.CreateMemory(ctx, postgres.NewMemory{
+		Type: "reference", Slug: "long-memory", Description: "unrelated topic", Body: "irrelevant intro, then the real content",
+		Embedding: vector(0, 1), EmbeddingModel: "embeddinggemma",
+		Chunks: []postgres.MemoryChunk{
+			{ChunkIndex: 0, Text: "irrelevant intro", Embedding: vector(0, 1)},
+			{ChunkIndex: 1, Text: "the real content", Embedding: vector(1, 0)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateMemory(long-memory): %v", err)
+	}
+	_, err = store.CreateMemory(ctx, postgres.NewMemory{
+		Type: "reference", Slug: "short-memory", Description: "also unrelated", Body: "b",
+		Embedding: vector(0, 1), EmbeddingModel: "embeddinggemma",
+		Chunks: []postgres.MemoryChunk{{ChunkIndex: 0, Text: "b", Embedding: vector(0, 1)}},
+	})
+	if err != nil {
+		t.Fatalf("CreateMemory(short-memory): %v", err)
+	}
+
+	results, err := store.SearchMemories(ctx, vector(1, 0), postgres.MemoryFilter{}, 10)
+	if err != nil {
+		t.Fatalf("SearchMemories: %v", err)
+	}
+	if len(results) == 0 || results[0].Slug != "long-memory" {
+		t.Fatalf("top result = %+v, want long-memory to rank first via its body chunk", results)
+	}
+}
+
+func TestSearchMemoriesDeduplicatesMultipleChunkHitsToOneRowPerMemory(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	_, err := store.CreateMemory(ctx, postgres.NewMemory{
+		Type: "reference", Slug: "multi-chunk", Description: "d", Body: "b",
+		Embedding: vector(0, 1), EmbeddingModel: "embeddinggemma",
+		Chunks: []postgres.MemoryChunk{
+			{ChunkIndex: 0, Text: "chunk one", Embedding: vector(1, 0)},
+			{ChunkIndex: 1, Text: "chunk two", Embedding: vector(0.9, 0.1)},
+			{ChunkIndex: 2, Text: "chunk three", Embedding: vector(0.8, 0.2)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateMemory: %v", err)
+	}
+
+	results, err := store.SearchMemories(ctx, vector(1, 0), postgres.MemoryFilter{}, 10)
+	if err != nil {
+		t.Fatalf("SearchMemories: %v", err)
+	}
+	count := 0
+	for _, r := range results {
+		if r.Slug == "multi-chunk" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("multi-chunk appeared %d times in results, want exactly 1 despite having 3 matching chunks", count)
+	}
+}
+
+func TestSearchMemoriesToleratesAMemoryWithNoChunks(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	// no Chunks set at all — the pre-backfill / not-yet-chunked case.
+	_, err := store.CreateMemory(ctx, postgres.NewMemory{
+		Type: "reference", Slug: "no-chunks", Description: "d", Body: "b",
+		Embedding: vector(1, 0), EmbeddingModel: "embeddinggemma",
+	})
+	if err != nil {
+		t.Fatalf("CreateMemory: %v", err)
+	}
+
+	results, err := store.SearchMemories(ctx, vector(1, 0), postgres.MemoryFilter{}, 10)
+	if err != nil {
+		t.Fatalf("SearchMemories: %v", err)
+	}
+	if len(results) != 1 || results[0].Slug != "no-chunks" {
+		t.Errorf("results = %+v, want the chunkless memory found via its description score", results)
+	}
+}

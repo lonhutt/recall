@@ -15,6 +15,7 @@ import (
 )
 
 const embeddingsPath = "/v1/embeddings"
+const tokenizePath = "/tokenize"
 
 // requestTimeout bounds a single embed call. The case this is for is an
 // embeddings server that accepts the connection and then never answers
@@ -29,6 +30,7 @@ type Client struct {
 	model          string
 	queryPrefix    string
 	documentPrefix string
+	maxTokens      int
 	httpClient     *http.Client
 	backoff        []time.Duration
 }
@@ -36,12 +38,19 @@ type Client struct {
 // New builds a client for the llama.cpp server at baseURL. The prefixes
 // implement the embedding model's asymmetric-retrieval convention, if the
 // model has one; internal/config holds the defaults.
-func New(baseURL, model, queryPrefix, documentPrefix string) *Client {
+//
+// maxTokens is the model's context window. Embed checks each input against
+// it before calling the embeddings endpoint, so a text that has grown too
+// large to embed fails fast with a message that says so, instead of the
+// caller having to decode an opaque error from the embeddings endpoint (or
+// worse, a silent server-side truncation). maxTokens <= 0 disables the check.
+func New(baseURL, model, queryPrefix, documentPrefix string, maxTokens int) *Client {
 	return &Client{
 		baseURL:        baseURL,
 		model:          model,
 		queryPrefix:    queryPrefix,
 		documentPrefix: documentPrefix,
+		maxTokens:      maxTokens,
 		httpClient:     &http.Client{Timeout: requestTimeout},
 		backoff:        defaultBackoff,
 	}
@@ -71,6 +80,14 @@ type embeddingResponse struct {
 	Data []embeddingDatum `json:"data"`
 }
 
+type tokenizeRequest struct {
+	Content string `json:"content"`
+}
+
+type tokenizeResponse struct {
+	Tokens []int `json:"tokens"`
+}
+
 func (c *Client) prefix(text string, kind embeddings.InputType) string {
 	if kind == embeddings.InputTypeQuery {
 		return c.queryPrefix + text
@@ -85,6 +102,18 @@ func (c *Client) Embed(ctx context.Context, texts []string, kind embeddings.Inpu
 	prefixed := make([]string, len(texts))
 	for i, t := range texts {
 		prefixed[i] = c.prefix(t, kind)
+	}
+
+	if c.maxTokens > 0 {
+		for _, t := range prefixed {
+			n, err := c.CountTokens(ctx, t)
+			if err != nil {
+				return nil, fmt.Errorf("counting tokens before embedding: %w", err)
+			}
+			if n > c.maxTokens {
+				return nil, fmt.Errorf("text is %d tokens, which exceeds the %d-token limit %s supports; split it into multiple memories or shorten it", n, c.maxTokens, c.model)
+			}
+		}
 	}
 
 	body, err := json.Marshal(embeddingRequest{Input: prefixed, Model: c.model})
@@ -108,6 +137,71 @@ func (c *Client) Embed(ctx context.Context, texts []string, kind embeddings.Inpu
 		case <-time.After(c.backoff[attempt]):
 		}
 	}
+}
+
+// CountTokens returns how many tokens the server's own tokenizer produces
+// for text — the exact count the embeddings endpoint will see, not an
+// estimate, since it tokenizes the identical string Embed sends it. It
+// retries transient failures the same way Embed does, so a text that has
+// to be tokenized before every embed call (whenever maxTokens > 0) doesn't
+// make the whole operation less resilient than it was before that check
+// existed.
+func (c *Client) CountTokens(ctx context.Context, text string) (int, error) {
+	body, err := json.Marshal(tokenizeRequest{Content: text})
+	if err != nil {
+		return 0, fmt.Errorf("marshaling llama.cpp tokenize request: %w", err)
+	}
+
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		n, retriable, err := c.doCountTokens(ctx, body)
+		if err == nil {
+			return n, nil
+		}
+		lastErr = err
+		if !retriable || attempt >= len(c.backoff) {
+			return 0, lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(c.backoff[attempt]):
+		}
+	}
+}
+
+func (c *Client) doCountTokens(ctx context.Context, body []byte) (int, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+tokenizePath, bytes.NewReader(body))
+	if err != nil {
+		return 0, false, fmt.Errorf("building llama.cpp tokenize request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, true, fmt.Errorf("calling llama.cpp tokenize endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, true, fmt.Errorf("reading llama.cpp tokenize response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var errBody struct {
+			Detail string `json:"detail"`
+		}
+		_ = json.Unmarshal(respBody, &errBody)
+		apiErr := &APIError{StatusCode: resp.StatusCode, Detail: errBody.Detail}
+		return 0, resp.StatusCode >= 500, apiErr
+	}
+
+	var parsed tokenizeResponse
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return 0, false, fmt.Errorf("decoding llama.cpp tokenize response: %w", err)
+	}
+	return len(parsed.Tokens), false, nil
 }
 
 func (c *Client) doEmbed(ctx context.Context, body []byte, want int) ([][]float32, bool, error) {

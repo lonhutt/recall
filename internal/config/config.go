@@ -14,6 +14,7 @@ type Config struct {
 	EmbeddingModel          string
 	EmbeddingQueryPrefix    string
 	EmbeddingDocumentPrefix string
+	EmbeddingMaxTokens      int
 	MigrateOnStart          bool
 	Transport               string
 	HTTPPort                string
@@ -55,6 +56,15 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("parsing RECALL_MIGRATE_ON_START: %w", err)
 	}
 	cfg.MigrateOnStart = migrateOnStart
+
+	// EmbeddingGemma's native context window is 2048 tokens; text beyond it
+	// fails at the embeddings server instead of embedding truncated. Override
+	// if the embedding model changes to one with a different limit.
+	maxTokens, err := strconv.Atoi(envOrDefault("RECALL_EMBEDDING_MAX_TOKENS", "2048"))
+	if err != nil {
+		return nil, fmt.Errorf("parsing RECALL_EMBEDDING_MAX_TOKENS: %w", err)
+	}
+	cfg.EmbeddingMaxTokens = maxTokens
 
 	return cfg, nil
 }

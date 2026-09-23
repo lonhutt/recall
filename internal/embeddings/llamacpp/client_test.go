@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,7 +40,7 @@ func TestEmbedPrefixesQueryTextAndParsesResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix)
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix, 0)
 
 	got, err := c.Embed(context.Background(), []string{"first", "second"}, embeddings.InputTypeQuery)
 	if err != nil {
@@ -76,7 +77,7 @@ func TestEmbedPrefixesDocumentText(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix)
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix, 0)
 	if _, err := c.Embed(context.Background(), []string{"hello"}, embeddings.InputTypeDocument); err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
@@ -97,7 +98,7 @@ func TestEmbedUsesCustomPrefixesWhenConfigured(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "some-other-model", "search_query: ", "search_document: ")
+	c := New(srv.URL, "some-other-model", "search_query: ", "search_document: ", 0)
 	if _, err := c.Embed(context.Background(), []string{"hello"}, embeddings.InputTypeQuery); err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
@@ -115,7 +116,7 @@ func TestEmbedMapsNonSuccessResponseToAPIError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix)
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix, 0)
 	c.backoff = nil
 
 	_, err := c.Embed(context.Background(), []string{"x"}, embeddings.InputTypeQuery)
@@ -149,7 +150,7 @@ func TestEmbedRetriesOnServerErrorThenSucceeds(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix)
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix, 0)
 	c.backoff = []time.Duration{time.Millisecond, time.Millisecond}
 
 	got, err := c.Embed(context.Background(), []string{"x"}, embeddings.InputTypeQuery)
@@ -176,7 +177,7 @@ func TestEmbedRejectsOutOfRangeIndex(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix)
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix, 0)
 	if _, err := c.Embed(context.Background(), []string{"x"}, embeddings.InputTypeQuery); err == nil {
 		t.Fatal("expected an error for an out-of-range index, got nil")
 	}
@@ -188,7 +189,7 @@ func TestEmbedRejectsWrongEmbeddingCount(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix)
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix, 0)
 	if _, err := c.Embed(context.Background(), []string{"x"}, embeddings.InputTypeQuery); err == nil {
 		t.Fatal("expected an error for zero embeddings, got nil")
 	}
@@ -205,8 +206,155 @@ func TestEmbedRejectsDuplicateIndex(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix)
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix, 0)
 	if _, err := c.Embed(context.Background(), []string{"a", "b"}, embeddings.InputTypeQuery); err == nil {
 		t.Fatal("expected an error when one input got no embedding, got nil")
+	}
+}
+
+func TestCountTokensRetriesOnServerErrorThenSucceeds(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{"detail": "loading model"})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"tokens": []int{1, 2, 3}})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix, 0)
+	c.backoff = []time.Duration{time.Millisecond, time.Millisecond}
+
+	n, err := c.CountTokens(context.Background(), "x")
+	if err != nil {
+		t.Fatalf("CountTokens returned error after retry: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("attempts = %d, want 2", attempts)
+	}
+	if n != 3 {
+		t.Errorf("CountTokens() = %d, want 3", n)
+	}
+}
+
+func TestCountTokensDoesNotRetryOnClientError(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"detail": "bad request"})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix, 0)
+	c.backoff = []time.Duration{time.Millisecond, time.Millisecond}
+
+	if _, err := c.CountTokens(context.Background(), "x"); err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if attempts != 1 {
+		t.Errorf("attempts = %d, want 1 (a 4xx should not be retried)", attempts)
+	}
+}
+
+func TestCountTokensParsesResponse(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/tokenize" {
+			t.Errorf("path = %q, want /tokenize", r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		json.NewEncoder(w).Encode(map[string]any{"tokens": []int{1, 2, 3, 4, 5}})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix, 0)
+	n, err := c.CountTokens(context.Background(), "hello world")
+	if err != nil {
+		t.Fatalf("CountTokens: %v", err)
+	}
+	if n != 5 {
+		t.Errorf("CountTokens() = %d, want 5", n)
+	}
+	if gotBody["content"] != "hello world" {
+		t.Errorf("body[content] = %v, want %q", gotBody["content"], "hello world")
+	}
+}
+
+// a document that has grown past the embedding model's context window is
+// exactly the failure this guards against: without it, the caller only
+// finds out from an opaque error at the embeddings endpoint (or, on some
+// servers, silent truncation) instead of a message that says what's wrong.
+func TestEmbedRejectsTextExceedingMaxTokens(t *testing.T) {
+	embeddingsCalled := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/tokenize":
+			json.NewEncoder(w).Encode(map[string]any{"tokens": make([]int, 2372)})
+		case "/v1/embeddings":
+			embeddingsCalled = true
+			json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{"index": 0, "embedding": []float32{0.1}}},
+			})
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix, 2048)
+	_, err := c.Embed(context.Background(), []string{"a very long memory body"}, embeddings.InputTypeDocument)
+	if err == nil {
+		t.Fatal("expected an error for text exceeding the token limit, got nil")
+	}
+	if !strings.Contains(err.Error(), "2372") || !strings.Contains(err.Error(), "2048") {
+		t.Errorf("error = %q, want it to name the actual token count and the limit", err.Error())
+	}
+	if embeddingsCalled {
+		t.Error("Embed called the embeddings endpoint despite the text exceeding the token limit")
+	}
+}
+
+func TestEmbedAllowsTextWithinMaxTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/tokenize":
+			json.NewEncoder(w).Encode(map[string]any{"tokens": make([]int, 100)})
+		case "/v1/embeddings":
+			json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{"index": 0, "embedding": []float32{0.1}}},
+			})
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix, 2048)
+	if _, err := c.Embed(context.Background(), []string{"a short memory body"}, embeddings.InputTypeDocument); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+}
+
+func TestEmbedSkipsTokenCheckWhenMaxTokensIsZero(t *testing.T) {
+	tokenizeCalled := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/tokenize":
+			tokenizeCalled = true
+			json.NewEncoder(w).Encode(map[string]any{"tokens": make([]int, 999999)})
+		case "/v1/embeddings":
+			json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{"index": 0, "embedding": []float32{0.1}}},
+			})
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "embeddinggemma", gemmaQueryPrefix, gemmaDocumentPrefix, 0)
+	if _, err := c.Embed(context.Background(), []string{"anything"}, embeddings.InputTypeDocument); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if tokenizeCalled {
+		t.Error("Embed called /tokenize despite maxTokens being 0 (disabled)")
 	}
 }

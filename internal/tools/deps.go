@@ -26,10 +26,20 @@ type Store interface {
 // Embedder generates text embeddings. Satisfied by *llamacpp.Client.
 type Embedder interface {
 	Embed(ctx context.Context, texts []string, kind embeddings.InputType) ([][]float32, error)
+	CountTokens(ctx context.Context, text string) (int, error)
 }
 
 type Tools struct {
 	Store          Store
 	Embedder       Embedder
 	EmbeddingModel string
+	// MaxTokensPerChunk is the per-chunk token budget. <= 0 disables
+	// chunking entirely, matching llamacpp.New's convention for the same
+	// config value.
+	MaxTokensPerChunk int
+	// DocumentPrefix mirrors the prefix the Embedder prepends to every
+	// document input. Chunking has to count tokens including it, or a chunk
+	// packed right up to the budget would exceed it once Embed adds the
+	// prefix and be rejected.
+	DocumentPrefix string
 }

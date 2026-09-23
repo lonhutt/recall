@@ -24,6 +24,7 @@ type NewMemory struct {
 	Tags           []string
 	Embedding      []float32
 	EmbeddingModel string
+	Chunks         []MemoryChunk
 }
 
 // MemoryPatch gives update_memory PATCH semantics: a nil field is left
@@ -38,6 +39,7 @@ type MemoryPatch struct {
 	Tags           *[]string
 	Embedding      []float32
 	EmbeddingModel *string
+	Chunks         *[]MemoryChunk
 }
 
 const memoryColumns = "id, type, slug, description, body, project, agent, tags, embedding_model, created_at, updated_at"
@@ -74,7 +76,14 @@ func (s *Store) CreateMemory(ctx context.Context, m NewMemory) (*models.Memory, 
 	if tags == nil {
 		tags = []string{}
 	}
-	row := s.pool.QueryRow(ctx, `
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	row := tx.QueryRow(ctx, `
 		INSERT INTO memories (type, slug, description, body, project, agent, tags, embedding, embedding_model)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING `+memoryColumns,
@@ -87,6 +96,13 @@ func (s *Store) CreateMemory(ctx context.Context, m NewMemory) (*models.Memory, 
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return nil, models.ErrDuplicateSlug
 		}
+		return nil, err
+	}
+
+	if err := replaceMemoryChunks(ctx, tx, mem.ID, m.Chunks); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return mem, nil
@@ -130,7 +146,26 @@ func (s *Store) UpdateMemory(ctx context.Context, slug string, p MemoryPatch) (*
 	query := fmt.Sprintf(`UPDATE memories SET %s WHERE slug = $%d RETURNING %s`,
 		strings.Join(sets, ", "), len(args), memoryColumns)
 
-	return scanMemory(s.pool.QueryRow(ctx, query, args...))
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	mem, err := scanMemory(tx.QueryRow(ctx, query, args...))
+	if err != nil {
+		return nil, err
+	}
+
+	if p.Chunks != nil {
+		if err := replaceMemoryChunks(ctx, tx, mem.ID, *p.Chunks); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return mem, nil
 }
 
 func (s *Store) GetMemoryBySlug(ctx context.Context, slug string) (*models.Memory, error) {

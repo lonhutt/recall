@@ -17,7 +17,7 @@ import (
 func TestMCPServerExposesAllToolsEndToEnd(t *testing.T) {
 	store := newFakeStore()
 	embedder := &fakeEmbedder{vector: []float32{1, 0, 0}}
-	toolset := &Tools{Store: store, Embedder: embedder, EmbeddingModel: "embeddinggemma"}
+	toolset := &Tools{Store: store, Embedder: embedder, EmbeddingModel: "embeddinggemma", MaxTokensPerChunk: 2048}
 
 	server := mcp.NewServer(&mcp.Implementation{Name: "recall-test", Version: "test"}, nil)
 	toolset.RegisterAll(server)

@@ -8,7 +8,7 @@ import (
 func TestListMemoriesReturnsStoredMemories(t *testing.T) {
 	store := newFakeStore()
 	embedder := &fakeEmbedder{vector: []float32{1}}
-	tools := &Tools{Store: store, Embedder: embedder}
+	tools := &Tools{Store: store, Embedder: embedder, MaxTokensPerChunk: 2048}
 	seedMemory(t, store, embedder, tools)
 
 	_, result, err := tools.ListMemories(context.Background(), nil, ListMemoriesArgs{})
@@ -23,7 +23,7 @@ func TestListMemoriesReturnsStoredMemories(t *testing.T) {
 func TestListMemoriesDoesNotCallEmbedder(t *testing.T) {
 	store := newFakeStore()
 	embedder := &fakeEmbedder{vector: []float32{1}}
-	tools := &Tools{Store: store, Embedder: embedder}
+	tools := &Tools{Store: store, Embedder: embedder, MaxTokensPerChunk: 2048}
 	seedMemory(t, store, embedder, tools)
 	embedder.calls = 0
 

@@ -8,7 +8,6 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/lonhutt/recall/internal/embeddings"
 	"github.com/lonhutt/recall/internal/models"
 	"github.com/lonhutt/recall/internal/store/postgres"
 )
@@ -41,9 +40,13 @@ func (t *Tools) SaveMemory(ctx context.Context, _ *mcp.CallToolRequest, a SaveMe
 		return nil, SaveMemoryResult{}, fmt.Errorf("body is required")
 	}
 
-	vectors, err := t.Embedder.Embed(ctx, []string{a.Description + "\n\n" + a.Body}, embeddings.InputTypeDocument)
+	descVec, err := t.embedDescription(ctx, a.Description)
 	if err != nil {
-		return nil, SaveMemoryResult{}, fmt.Errorf("generating embedding: %w", err)
+		return nil, SaveMemoryResult{}, fmt.Errorf("generating description embedding: %w", err)
+	}
+	chunks, err := t.chunkAndEmbedBody(ctx, a.Body)
+	if err != nil {
+		return nil, SaveMemoryResult{}, fmt.Errorf("generating body chunk embeddings: %w", err)
 	}
 
 	mem, err := t.Store.CreateMemory(ctx, postgres.NewMemory{
@@ -54,8 +57,9 @@ func (t *Tools) SaveMemory(ctx context.Context, _ *mcp.CallToolRequest, a SaveMe
 		Project:        a.Project,
 		Agent:          a.Agent,
 		Tags:           a.Tags,
-		Embedding:      vectors[0],
+		Embedding:      descVec,
 		EmbeddingModel: t.EmbeddingModel,
+		Chunks:         chunks,
 	})
 	if err != nil {
 		if errors.Is(err, models.ErrDuplicateSlug) {
