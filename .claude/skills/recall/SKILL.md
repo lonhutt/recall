@@ -13,6 +13,30 @@ of the three reachable from the host (`127.0.0.1:8092`, HTTP, bearer-token
 authenticated). `postgres` and `embeddings` are compose-internal only —
 that's intentional, not a bug, since `recall` is their sole consumer.
 
+## Checking status
+
+The quickest health check, in order of what each layer proves:
+
+```sh
+docker compose ps                                              # all three containers "healthy"?
+curl -sf http://127.0.0.1:8092/healthz && echo                 # recall process is up (unauthenticated)
+python3 .claude/skills/recall/scripts/recall_cli.py list_memories '{"limit": 1}'  # token + DB + embeddings all work
+```
+
+`docker compose ps` only proves the containers exist and pass their health
+checks — it says nothing about the token or the embedding path. `/healthz` is
+unauthenticated, so it only proves the `recall` process is listening. The
+`recall_cli.py` call is the only one that exercises the whole path (HTTP →
+auth → Postgres → embeddings), so it's the one to trust when the question is
+"does recall actually work right now."
+
+Inside a Claude Code session specifically, the fastest check is whether
+`save_memory`, `search_memory`, `list_memories`, `update_memory`,
+`delete_memory`, `supersede_memory`, `log_event`, and `list_events` show up as
+available tools at all — if they don't, either the stack is down or `~/.claude.json` isn't
+registered/current for this session (see "Installing" step 4 and "When
+they're not connected" below); the three commands above tell you which.
+
 ## Installing on a machine that has never run it
 
 Only for a first-time setup; if `docker compose ps` already lists the three
@@ -191,7 +215,10 @@ to override), and gives a specific error for the two failure modes that
 actually happen — 401 (token mismatch, likely rotated — see below) and
 connection-refused (stack isn't up — see below).
 
-## Operating the stack
+## Operating the stack (start / stop / logs / maintenance)
+
+For "is it working right now," use "Checking status" above instead — these
+are the commands for changing or inspecting the stack itself.
 
 ```sh
 docker compose up -d --build   # bring everything up (builds recall's image if code changed)
