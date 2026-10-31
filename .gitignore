@@ -20,3 +20,7 @@ go.work.sum
 # .claude/skills/recall itself is committed on purpose
 .claude/settings.local.json
 .claude/skills/*-workspace/
+
+# superpowers: manual worktree fallback and subagent-driven-development scratch state
+.worktrees/
+.superpowers/

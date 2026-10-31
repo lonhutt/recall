@@ -34,6 +34,9 @@ type Memory struct {
 	Agent          string
 	Tags           []string
 	EmbeddingModel string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// SupersededBy and Overrides are slugs, "" when unset.
+	SupersededBy string
+	Overrides    string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }

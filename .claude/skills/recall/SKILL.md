@@ -1,6 +1,6 @@
 ---
 name: recall
-description: Operate and troubleshoot Recall, Lon's self-hosted MCP memory service (Postgres + pgvector + a local llama.cpp embedding model, all containerized in this repo). Use this whenever recall, the memory stack, or its MCP tools (save_memory, search_memory, list_memories, update_memory, delete_memory, log_event, list_events) come up in the context of this project — checking whether it's healthy, bringing it up or down, viewing logs, rotating the HTTP bearer token, running schema migrations, or re-embedding after switching the embedding model. Also use it to call recall's tools directly over HTTP via the bundled script whenever the recall MCP server isn't connected in the current Claude Code session. Trigger even on indirect phrasing like "is recall running", "recall seems broken", "check my memories for X" while working in this repo, or "I changed the embedding model, does existing data need to migrate" — not just literal mentions of "recall" or "MCP". Also covers installing Recall from scratch on a machine that has never run it (asking for Docker group access, generating the bearer token, bringing the three containers up, registering the server in ~/.claude.json), so trigger on "set up recall", "install recall", "get recall running on this machine", or "recall isn't connected, can you wire it up".
+description: Operate and troubleshoot Recall, Lon's self-hosted MCP memory service (Postgres + pgvector + a local llama.cpp embedding model, all containerized in this repo). Use this whenever recall, the memory stack, or its MCP tools (save_memory, search_memory, list_memories, update_memory, delete_memory, supersede_memory, log_event, list_events) come up in the context of this project — checking whether it's healthy, bringing it up or down, viewing logs, rotating the HTTP bearer token, running schema migrations, or re-embedding after switching the embedding model. Also use it to call recall's tools directly over HTTP via the bundled script whenever the recall MCP server isn't connected in the current Claude Code session. Trigger even on indirect phrasing like "is recall running", "recall seems broken", "check my memories for X" while working in this repo, or "I changed the embedding model, does existing data need to migrate" — not just literal mentions of "recall" or "MCP". Also covers installing Recall from scratch on a machine that has never run it (asking for Docker group access, generating the bearer token, bringing the three containers up, registering the server in ~/.claude.json), so trigger on "set up recall", "install recall", "get recall running on this machine", or "recall isn't connected, can you wire it up".
 ---
 
 # Operating Recall
@@ -101,20 +101,31 @@ doesn't apply here, since a container isn't something Claude Code spawns.
 
 ### 5. Restart Claude Code
 
-MCP servers connect at session start, so the seven tools won't show up until a
+MCP servers connect at session start, so the eight tools won't show up until a
 new session; nothing is broken in the meantime. Until the restart,
 `recall_cli.py` is the way in (see "When they're not connected").
 
 ## When MCP tools are already connected
 
 If `save_memory`, `search_memory`, `list_memories`, `update_memory`,
-`delete_memory`, `log_event`, and `list_events` show up as available tools,
-just use them directly — that's the normal path, and nothing in this skill
-needs to intervene. A few conventions worth following when calling them:
+`delete_memory`, `supersede_memory`, `log_event`, and `list_events` show up
+as available tools, just use them directly — that's the normal path, and
+nothing in this skill needs to intervene. A few conventions worth following
+when calling them:
 
 - `project`: the absolute path of the project the memory relates to (e.g.
-  `/home/lhutt/Projects/dcx`), not a short name — this is what `list_memories`
-  and `search_memory`'s `project` filter match against.
+  `/home/lhutt/Projects/dcx`), not a short name. **Required on every
+  `save_memory` call unless the memory is genuinely global**, in which case
+  pass `global: true` instead. Derive it yourself rather than asking: walk up
+  from the current working directory looking for `CLAUDE.md`, `AGENTS.md`, or
+  a build file (`go.mod`, `package.json`, `pom.xml`, `Cargo.toml`,
+  `Makefile`, etc.); the directory holding the first one found is the
+  project root. If the working directory is `/`, directly under `/home/*`
+  with no such markers, or otherwise clearly not inside a project, pass
+  `global: true`. `save_memory` rejects a call with neither; it never
+  guesses.
+- `search_memory` with a `project` returns that project's memories and
+  global ones together.
 - `agent`: `"claude-code"`.
 - `type`: one of `user` / `feedback` / `project` / `reference` — same
   taxonomy the file-based memory system used, so the same judgment about
@@ -124,6 +135,41 @@ needs to intervene. A few conventions worth following when calling them:
   `list_memories` first — cheaper than a duplicate, and `update_memory` is
   the right tool if it turns out to already exist (patches only given
   fields, re-embeds only if description/body changed).
+- If a project-scoped memory should take precedence over a global one on
+  the same topic (both stay true, in different scopes), pass
+  `overrides: <the global memory's slug>` on `save_memory`/`update_memory`.
+  Within that project's searches the global one then ranks lower and comes
+  back with `overridden_by`.
+- If a memory is flatly wrong now, not just true in a narrower scope, save
+  the replacement and call `supersede_memory(old_slug, new_slug)` rather
+  than editing the old one. It keeps the history, ranked lower and marked
+  `superseded_by`; `update_memory`'s `clear_superseded_by: true` undoes it.
+- Search results carry `age` (days since last update); older `project` and
+  `feedback` memories rank lower, `user` and `reference` ones barely.
+
+## When `save_memory` blocks on a likely duplicate
+
+`save_memory` checks for a near-duplicate of the same type (the current
+project first, then global memories) and blocks with an error naming the
+existing slug, its scope, and the similarity. **Don't silently retry with
+`force: true` and don't silently give up. Stop and ask the person you're
+working with**, offering exactly these three options:
+
+1. **Save as project-specific**: re-save scoped to the current project. If
+   the collision was with a *global* memory, also pass
+   `overrides: <the existing slug>`; the new content is true for this
+   project, and the global fact isn't necessarily wrong elsewhere. That
+   save goes through without `force`. If the collision was with a memory in
+   the same project, this option needs `force: true`, and usually
+   `update_memory` on the existing one is the better answer.
+2. **Save as new global**: re-save with `force: true`, then
+   `supersede_memory(existing_slug, new_slug)`, so the new content replaces
+   the old fact instead of sitting beside it.
+3. **Drop it**: make no further calls; the existing memory already covers
+   it.
+
+The block is deliberate friction: near-duplicate saves are how a memory
+store quietly fills up with redundant or contradicting entries.
 
 ## When they're not connected
 
@@ -137,7 +183,7 @@ would, so you can call any tool from a shell:
 ```sh
 python3 .claude/skills/recall/scripts/recall_cli.py list_memories '{"limit": 5}'
 python3 .claude/skills/recall/scripts/recall_cli.py search_memory '{"query": "how does Lon like commits structured"}'
-python3 .claude/skills/recall/scripts/recall_cli.py save_memory '{"type": "project", "slug": "x", "description": "d", "body": "b"}'
+python3 .claude/skills/recall/scripts/recall_cli.py save_memory '{"type": "project", "slug": "x", "description": "d", "body": "b", "project": "/home/lhutt/Projects/recall"}'
 ```
 
 It reads `RECALL_HTTP_TOKEN` from `.env` by default (or `--token`/`$RECALL_HTTP_TOKEN`
@@ -234,9 +280,9 @@ Two other things change with the model, neither of which is a data problem:
   needs a new package implementing the `Embedder` interface
   (`internal/tools/deps.go`) and rewiring in `main.go` — the same seam the
   Voyage→llama.cpp swap used.
-- **`embedding_model` is stored per row but not enforced anywhere.**
-  `search_memory` ranks every row by cosine distance with no check on which
-  model produced which row's vector — a partial backfill doesn't error, it
-  silently degrades ranking quality by comparing incompatible vector spaces.
-  This is why the backfill in the migrations section has to run to
-  completion before search results are trustworthy again, not just started.
+- **Search and the duplicate check only compare rows from the configured
+  `embedding_model`.** Rows not yet re-embedded after a model switch don't
+  error; they just drop out of `search_memory` and `save_memory`'s
+  duplicate check. This is why the backfill in the migrations section has to
+  run to completion before search results are complete again, not just
+  started.

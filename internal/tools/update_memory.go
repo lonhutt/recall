@@ -21,6 +21,9 @@ type UpdateMemoryArgs struct {
 	Project     *string   `json:"project,omitempty"`
 	Agent       *string   `json:"agent,omitempty"`
 	Tags        *[]string `json:"tags,omitempty"`
+	Overrides   *string   `json:"overrides,omitempty" jsonschema:"slug of a global memory to override, or empty string to clear"`
+	// Only clearing is offered; supersede_memory is the one way to set it.
+	ClearSupersededBy bool `json:"clear_superseded_by,omitempty" jsonschema:"true un-marks this memory as superseded"`
 }
 
 type UpdateMemoryResult struct {
@@ -40,13 +43,30 @@ func (t *Tools) UpdateMemory(ctx context.Context, _ *mcp.CallToolRequest, a Upda
 		return nil, UpdateMemoryResult{}, err
 	}
 
+	// Checked against where the memory ends up, so moving it to global while
+	// it still overrides something fails too.
+	project, overrides := existing.Project, existing.Overrides
+	if a.Project != nil {
+		project = *a.Project
+	}
+	if a.Overrides != nil {
+		overrides = *a.Overrides
+	}
+	if a.Project != nil || a.Overrides != nil {
+		if err := t.validateOverrides(ctx, project, overrides); err != nil {
+			return nil, UpdateMemoryResult{}, err
+		}
+	}
+
 	patch := postgres.MemoryPatch{
-		Type:        a.Type,
-		Description: a.Description,
-		Body:        a.Body,
-		Project:     a.Project,
-		Agent:       a.Agent,
-		Tags:        a.Tags,
+		Type:              a.Type,
+		Description:       a.Description,
+		Body:              a.Body,
+		Project:           a.Project,
+		Agent:             a.Agent,
+		Tags:              a.Tags,
+		Overrides:         a.Overrides,
+		ClearSupersededBy: a.ClearSupersededBy,
 	}
 
 	// Description and body embed independently: each is only re-embedded

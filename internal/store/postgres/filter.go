@@ -15,6 +15,10 @@ type MemoryFilter struct {
 	// EmbeddingModel only means anything to SearchMemories, which must not
 	// compare vectors from two different models; ListMemories leaves it nil.
 	EmbeddingModel *string
+	// withGlobal widens a Project filter to global memories too. Search sets
+	// it: a project's search should still see global memories, which is also
+	// where a project's overrides take effect.
+	withGlobal bool
 }
 
 // buildFilter renders f as a SQL WHERE clause (empty string if f has no
@@ -33,7 +37,13 @@ func buildFilter(paramOffset int, f MemoryFilter) (where string, args []any) {
 		args = append(args, *v)
 	}
 	add("type", f.Type)
-	add("project", f.Project)
+	if f.Project != nil && f.withGlobal {
+		i++
+		conds = append(conds, fmt.Sprintf("(project = $%d OR project IS NULL)", i))
+		args = append(args, *f.Project)
+	} else {
+		add("project", f.Project)
+	}
 	add("agent", f.Agent)
 	add("embedding_model", f.EmbeddingModel)
 

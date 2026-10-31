@@ -1,4 +1,5 @@
-// Command recall runs Recall's MCP server, or applies its database migrations.
+// Command recall runs Recall's MCP server, applies its database migrations,
+// or scores search ranking against a probe file.
 package main
 
 import (
@@ -46,6 +47,12 @@ func run() error {
 			return err
 		}
 		return backfillChunks(cfg)
+	case "eval":
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		return runEval(cfg, os.Stdin, os.Stdout)
 	case "serve":
 		cfg, err := config.Load()
 		if err != nil {
@@ -53,7 +60,7 @@ func run() error {
 		}
 		return serve(cfg)
 	default:
-		return fmt.Errorf("unknown command %q; expected \"serve\", \"migrate\", or \"backfill-chunks\"", cmd)
+		return fmt.Errorf("unknown command %q; expected \"serve\", \"migrate\", \"backfill-chunks\", or \"eval\"", cmd)
 	}
 }
 

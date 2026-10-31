@@ -11,7 +11,7 @@ import (
 func seedMemory(t *testing.T, store *fakeStore, embedder *fakeEmbedder, tools *Tools) {
 	t.Helper()
 	_, _, err := tools.SaveMemory(context.Background(), nil, SaveMemoryArgs{
-		Type: "project", Slug: "seeded", Description: "old desc", Body: "old body",
+		Type: "project", Slug: "seeded", Description: "old desc", Body: "old body", Project: "recall",
 	})
 	if err != nil {
 		t.Fatalf("seeding memory: %v", err)
@@ -171,5 +171,66 @@ func TestUpdateMemoryWrapsEmbeddingFailure(t *testing.T) {
 	_, _, err := tools.UpdateMemory(context.Background(), nil, UpdateMemoryArgs{Slug: "seeded", Body: &newBody})
 	if !errors.Is(err, embedFailure) {
 		t.Errorf("error = %v, want it to wrap %v", err, embedFailure)
+	}
+}
+
+func TestUpdateMemorySetsOverrides(t *testing.T) {
+	store := newFakeStore()
+	embedder := &fakeEmbedder{vector: []float32{1}}
+	tools := &Tools{Store: store, Embedder: embedder, MaxTokensPerChunk: 2048}
+	if _, _, err := tools.SaveMemory(context.Background(), nil, SaveMemoryArgs{
+		Type: "reference", Slug: "global-x", Description: "d", Body: "b", Global: true,
+	}); err != nil {
+		t.Fatalf("seeding global-x: %v", err)
+	}
+	seedMemory(t, store, embedder, tools) // "seeded", now needs Global: true internally — see note above
+
+	overrides := "global-x"
+	_, result, err := tools.UpdateMemory(context.Background(), nil, UpdateMemoryArgs{Slug: "seeded", Overrides: &overrides})
+	if err != nil {
+		t.Fatalf("UpdateMemory: %v", err)
+	}
+	if result.Memory.Overrides != "global-x" {
+		t.Errorf("Overrides = %q, want global-x", result.Memory.Overrides)
+	}
+}
+
+func TestUpdateMemoryRejectsOverridesWhenTargetIsNotGlobal(t *testing.T) {
+	store := newFakeStore()
+	embedder := &fakeEmbedder{vector: []float32{1}}
+	tools := &Tools{Store: store, Embedder: embedder, MaxTokensPerChunk: 2048}
+	seedMemory(t, store, embedder, tools)
+	if _, _, err := tools.SaveMemory(context.Background(), nil, SaveMemoryArgs{
+		Type: "project", Slug: "also-project-scoped", Description: "d", Body: "b", Project: "recall",
+	}); err != nil {
+		t.Fatalf("seeding also-project-scoped: %v", err)
+	}
+
+	overrides := "also-project-scoped"
+	_, _, err := tools.UpdateMemory(context.Background(), nil, UpdateMemoryArgs{Slug: "seeded", Overrides: &overrides})
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+}
+
+func TestUpdateMemoryRejectsUnscopingAMemoryThatOverrides(t *testing.T) {
+	store := newFakeStore()
+	embedder := &fakeEmbedder{vector: []float32{1}}
+	tools := &Tools{Store: store, Embedder: embedder, MaxTokensPerChunk: 2048}
+	if _, _, err := tools.SaveMemory(context.Background(), nil, SaveMemoryArgs{
+		Type: "reference", Slug: "global-y", Description: "d", Body: "b", Global: true,
+	}); err != nil {
+		t.Fatalf("seeding global-y: %v", err)
+	}
+	if _, _, err := tools.SaveMemory(context.Background(), nil, SaveMemoryArgs{
+		Type: "project", Slug: "local-y", Description: "d", Body: "b", Project: "recall", Overrides: "global-y",
+	}); err != nil {
+		t.Fatalf("seeding local-y: %v", err)
+	}
+
+	// Moving it to global would leave a global memory overriding another one.
+	global := ""
+	if _, _, err := tools.UpdateMemory(context.Background(), nil, UpdateMemoryArgs{Slug: "local-y", Project: &global}); err == nil {
+		t.Fatal("expected an error for unscoping a memory that still declares overrides, got nil")
 	}
 }

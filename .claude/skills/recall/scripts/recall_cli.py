@@ -14,7 +14,7 @@ Usage:
 Examples:
   recall_cli.py list_memories '{"limit": 5}'
   recall_cli.py search_memory '{"query": "how does Lon like commits structured"}'
-  recall_cli.py save_memory '{"type": "project", "slug": "x", "description": "d", "body": "b"}'
+  recall_cli.py save_memory '{"type": "project", "slug": "x", "description": "d", "body": "b", "project": "/home/lhutt/Projects/recall"}'
 """
 import argparse
 import json

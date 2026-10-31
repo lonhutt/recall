@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/lonhutt/recall/internal/models"
 	"github.com/lonhutt/recall/internal/store/postgres"
@@ -95,5 +96,65 @@ func TestSearchMemoryScopesToCurrentEmbeddingModel(t *testing.T) {
 	}
 	if got := *store.lastFilter.EmbeddingModel; got != "embeddinggemma" {
 		t.Errorf("filter.EmbeddingModel = %q, want embeddinggemma", got)
+	}
+}
+
+func TestSearchMemoryPassesQueryTextToStore(t *testing.T) {
+	store := newFakeStore()
+	tools := &Tools{Store: store, Embedder: &fakeEmbedder{vector: []float32{1}}}
+
+	if _, _, err := tools.SearchMemory(context.Background(), nil, SearchMemoryArgs{Query: "RECALL_HTTP_TOKEN"}); err != nil {
+		t.Fatalf("SearchMemory: %v", err)
+	}
+	if store.lastQuery != "RECALL_HTTP_TOKEN" {
+		t.Errorf("store query = %q, want the query text passed through for keyword matching", store.lastQuery)
+	}
+}
+
+func TestSearchMemoryReturnsSimilarityBesideScore(t *testing.T) {
+	store := newFakeStore()
+	store.searchResp = []postgres.ScoredMemory{
+		{Memory: models.Memory{Slug: "hit-1"}, Score: 0.03, Similarity: 0.71},
+	}
+	tools := &Tools{Store: store, Embedder: &fakeEmbedder{vector: []float32{1}}}
+
+	_, result, err := tools.SearchMemory(context.Background(), nil, SearchMemoryArgs{Query: "q"})
+	if err != nil {
+		t.Fatalf("SearchMemory: %v", err)
+	}
+	if len(result.Results) != 1 || result.Results[0].Score != 0.03 || result.Results[0].Similarity != 0.71 {
+		t.Errorf("Results = %+v, want score 0.03 and similarity 0.71", result.Results)
+	}
+}
+
+func TestSearchMemoryReturnsOverriddenByAndAge(t *testing.T) {
+	store := newFakeStore()
+	store.searchResp = []postgres.ScoredMemory{
+		{Memory: models.Memory{Slug: "global-style", UpdatedAt: time.Now().Add(-72 * time.Hour)}, OverriddenBy: "project-style"},
+	}
+	tools := &Tools{Store: store, Embedder: &fakeEmbedder{vector: []float32{1}}}
+
+	_, result, err := tools.SearchMemory(context.Background(), nil, SearchMemoryArgs{Query: "q", Project: "recall"})
+	if err != nil {
+		t.Fatalf("SearchMemory: %v", err)
+	}
+	if len(result.Results) != 1 || result.Results[0].OverriddenBy != "project-style" || result.Results[0].Age != "3 days" {
+		t.Errorf("Results = %+v, want overridden_by project-style and age 3 days", result.Results)
+	}
+}
+
+func TestHumanAgeRoundsDownToWholeDays(t *testing.T) {
+	now := time.Now()
+	for _, c := range []struct {
+		ago  time.Duration
+		want string
+	}{
+		{time.Hour, "today"},
+		{25 * time.Hour, "1 day"},
+		{50 * time.Hour, "2 days"},
+	} {
+		if got := humanAge(now.Add(-c.ago)); got != c.want {
+			t.Errorf("humanAge(%v ago) = %q, want %q", c.ago, got, c.want)
+		}
 	}
 }

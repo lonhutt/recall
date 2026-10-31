@@ -59,7 +59,7 @@ func TestMCPServerExposesAllToolsEndToEnd(t *testing.T) {
 	}
 
 	saved := call("save_memory", SaveMemoryArgs{
-		Type: "reference", Slug: "e2e-note", Description: "old desc", Body: "old body",
+		Type: "reference", Slug: "e2e-note", Description: "old desc", Body: "old body", Global: true,
 	})
 	if mem := saved["memory"].(map[string]any); mem["slug"] != "e2e-note" {
 		t.Fatalf("save_memory result: %+v", saved)

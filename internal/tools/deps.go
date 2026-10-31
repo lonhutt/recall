@@ -18,9 +18,11 @@ type Store interface {
 	GetMemoryBySlug(ctx context.Context, slug string) (*models.Memory, error)
 	DeleteMemory(ctx context.Context, slug string) error
 	ListMemories(ctx context.Context, f postgres.MemoryFilter, limit, offset int) ([]models.Memory, error)
-	SearchMemories(ctx context.Context, embedding []float32, f postgres.MemoryFilter, limit int) ([]postgres.ScoredMemory, error)
+	SearchMemories(ctx context.Context, embedding []float32, query string, f postgres.MemoryFilter, limit int) ([]postgres.ScoredMemory, error)
 	CreateLogEvent(ctx context.Context, e postgres.NewLogEvent) (*models.LogEvent, error)
 	ListLogEvents(ctx context.Context, f postgres.EventFilter, limit, offset int) ([]models.LogEvent, error)
+	SupersedeMemory(ctx context.Context, oldSlug, newSlug string) (*models.Memory, error)
+	FindSimilarMemory(ctx context.Context, embedding []float32, embeddingModel, memType, project string, threshold float64) (*postgres.ScoredMemory, error)
 }
 
 // Embedder generates text embeddings. Satisfied by *llamacpp.Client.

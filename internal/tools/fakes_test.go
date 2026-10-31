@@ -20,10 +20,13 @@ type fakeStore struct {
 	getErr     error
 	deleteErr  error
 	searchResp []postgres.ScoredMemory
-	searchErr  error
-	lastLimit  int
-	lastFilter postgres.MemoryFilter
-	lastChunks []postgres.MemoryChunk
+	// similarResp is what FindSimilarMemory returns; nil means no duplicate.
+	similarResp *postgres.ScoredMemory
+	searchErr   error
+	lastLimit   int
+	lastFilter  postgres.MemoryFilter
+	lastQuery   string
+	lastChunks  []postgres.MemoryChunk
 }
 
 func newFakeStore() *fakeStore {
@@ -41,6 +44,7 @@ func (f *fakeStore) CreateMemory(_ context.Context, m postgres.NewMemory) (*mode
 	mem := models.Memory{
 		ID: m.Slug, Type: m.Type, Slug: m.Slug, Description: m.Description, Body: m.Body,
 		Project: m.Project, Agent: m.Agent, Tags: m.Tags, EmbeddingModel: m.EmbeddingModel,
+		Overrides: m.Overrides,
 	}
 	f.bySlug[m.Slug] = mem
 	return &mem, nil
@@ -77,6 +81,12 @@ func (f *fakeStore) UpdateMemory(_ context.Context, slug string, p postgres.Memo
 	}
 	if p.EmbeddingModel != nil {
 		mem.EmbeddingModel = *p.EmbeddingModel
+	}
+	if p.ClearSupersededBy {
+		mem.SupersededBy = ""
+	}
+	if p.Overrides != nil {
+		mem.Overrides = *p.Overrides
 	}
 	f.bySlug[slug] = mem
 	return &mem, nil
@@ -117,7 +127,8 @@ func (f *fakeStore) ListMemories(_ context.Context, _ postgres.MemoryFilter, lim
 // explicitly (for asserting exact scores/ordering); otherwise it derives
 // results from bySlug applying filter, so end-to-end flows that save then
 // search see their own data.
-func (f *fakeStore) SearchMemories(_ context.Context, _ []float32, filter postgres.MemoryFilter, limit int) ([]postgres.ScoredMemory, error) {
+func (f *fakeStore) SearchMemories(_ context.Context, _ []float32, query string, filter postgres.MemoryFilter, limit int) ([]postgres.ScoredMemory, error) {
+	f.lastQuery = query
 	f.lastLimit = limit
 	f.lastFilter = filter
 	if f.searchErr != nil {
@@ -131,7 +142,8 @@ func (f *fakeStore) SearchMemories(_ context.Context, _ []float32, filter postgr
 		if filter.Type != nil && m.Type != *filter.Type {
 			continue
 		}
-		if filter.Project != nil && m.Project != *filter.Project {
+		// Like the real store, a project search also sees global memories.
+		if filter.Project != nil && m.Project != *filter.Project && m.Project != "" {
 			continue
 		}
 		if filter.Agent != nil && m.Agent != *filter.Agent {
@@ -205,4 +217,21 @@ func (f *fakeEmbedder) CountTokens(_ context.Context, text string) (int, error) 
 
 func TestFakeEmbedderSatisfiesWidenedEmbedderInterface(t *testing.T) {
 	var _ Embedder = (*fakeEmbedder)(nil)
+}
+
+func (f *fakeStore) SupersedeMemory(_ context.Context, oldSlug, newSlug string) (*models.Memory, error) {
+	mem, ok := f.bySlug[oldSlug]
+	if !ok {
+		return nil, models.ErrNotFound
+	}
+	if _, ok := f.bySlug[newSlug]; !ok {
+		return nil, models.ErrNotFound
+	}
+	mem.SupersededBy = newSlug
+	f.bySlug[oldSlug] = mem
+	return &mem, nil
+}
+
+func (f *fakeStore) FindSimilarMemory(_ context.Context, _ []float32, _, _, _ string, _ float64) (*postgres.ScoredMemory, error) {
+	return f.similarResp, nil
 }

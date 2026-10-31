@@ -25,6 +25,8 @@ type NewMemory struct {
 	Embedding      []float32
 	EmbeddingModel string
 	Chunks         []MemoryChunk
+	// Overrides is the slug of a global memory this one takes precedence over.
+	Overrides string
 }
 
 // MemoryPatch gives update_memory PATCH semantics: a nil field is left
@@ -40,9 +42,16 @@ type MemoryPatch struct {
 	Embedding      []float32
 	EmbeddingModel *string
 	Chunks         *[]MemoryChunk
+	// ClearSupersededBy is the only way to unset superseded_by here; setting
+	// it goes through SupersedeMemory.
+	ClearSupersededBy bool
+	// Overrides sets the overrides slug; "" clears it.
+	Overrides *string
 }
 
-const memoryColumns = "id, type, slug, description, body, project, agent, tags, embedding_model, created_at, updated_at"
+const memoryColumns = `id, type, slug, description, body, project, agent, tags, embedding_model, created_at, updated_at,
+	(SELECT slug FROM memories sb WHERE sb.id = memories.superseded_by) AS superseded_by_slug,
+	(SELECT slug FROM memories ov WHERE ov.id = memories.overrides) AS overrides_slug`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -53,12 +62,14 @@ type rowScanner interface {
 // the standard columns.
 func scanMemory(row rowScanner, extra ...any) (*models.Memory, error) {
 	var (
-		m       models.Memory
-		project sql.NullString
-		agent   sql.NullString
+		m            models.Memory
+		project      sql.NullString
+		agent        sql.NullString
+		supersededBy sql.NullString
+		overrides    sql.NullString
 	)
 	dest := []any{&m.ID, &m.Type, &m.Slug, &m.Description, &m.Body, &project, &agent,
-		&m.Tags, &m.EmbeddingModel, &m.CreatedAt, &m.UpdatedAt}
+		&m.Tags, &m.EmbeddingModel, &m.CreatedAt, &m.UpdatedAt, &supersededBy, &overrides}
 	err := row.Scan(append(dest, extra...)...)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -68,7 +79,34 @@ func scanMemory(row rowScanner, extra ...any) (*models.Memory, error) {
 	}
 	m.Project = project.String
 	m.Agent = agent.String
+	m.SupersededBy = supersededBy.String
+	m.Overrides = overrides.String
 	return &m, nil
+}
+
+// queryRower is satisfied by both *pgxpool.Pool and pgx.Tx, so idForSlug
+// works inside or outside a transaction.
+type queryRower interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// idForSlug resolves slug to its memory's id, or models.ErrNotFound.
+func idForSlug(ctx context.Context, q queryRower, slug string) (string, error) {
+	var id string
+	err := q.QueryRow(ctx, `SELECT id FROM memories WHERE slug = $1`, slug).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", models.ErrNotFound
+	}
+	return id, err
+}
+
+// nullableIDForSlug is idForSlug for an optional reference: "" resolves to
+// NULL rather than ErrNotFound.
+func nullableIDForSlug(ctx context.Context, q queryRower, slug string) (any, error) {
+	if slug == "" {
+		return nil, nil
+	}
+	return idForSlug(ctx, q, slug)
 }
 
 func (s *Store) CreateMemory(ctx context.Context, m NewMemory) (*models.Memory, error) {
@@ -83,12 +121,16 @@ func (s *Store) CreateMemory(ctx context.Context, m NewMemory) (*models.Memory, 
 	}
 	defer tx.Rollback(ctx)
 
+	overridesID, err := nullableIDForSlug(ctx, tx, m.Overrides)
+	if err != nil {
+		return nil, err
+	}
 	row := tx.QueryRow(ctx, `
-		INSERT INTO memories (type, slug, description, body, project, agent, tags, embedding, embedding_model)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO memories (type, slug, description, body, project, agent, tags, embedding, embedding_model, overrides)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING `+memoryColumns,
 		m.Type, m.Slug, m.Description, m.Body, nullableString(m.Project), nullableString(m.Agent),
-		tags, pgvector.NewVector(m.Embedding), m.EmbeddingModel)
+		tags, pgvector.NewVector(m.Embedding), m.EmbeddingModel, overridesID)
 
 	mem, err := scanMemory(row)
 	if err != nil {
@@ -140,6 +182,16 @@ func (s *Store) UpdateMemory(ctx context.Context, slug string, p MemoryPatch) (*
 	if p.EmbeddingModel != nil {
 		set("embedding_model", *p.EmbeddingModel)
 	}
+	if p.ClearSupersededBy {
+		sets = append(sets, "superseded_by = NULL")
+	}
+	if p.Overrides != nil {
+		id, err := nullableIDForSlug(ctx, s.pool, *p.Overrides)
+		if err != nil {
+			return nil, err
+		}
+		set("overrides", id)
+	}
 	sets = append(sets, "updated_at = now()")
 
 	args = append(args, slug)
@@ -164,6 +216,24 @@ func (s *Store) UpdateMemory(ctx context.Context, slug string, p MemoryPatch) (*
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
+	}
+	return mem, nil
+}
+
+// SupersedeMemory marks oldSlug as superseded by newSlug; neither memory's
+// content changes.
+func (s *Store) SupersedeMemory(ctx context.Context, oldSlug, newSlug string) (*models.Memory, error) {
+	newID, err := idForSlug(ctx, s.pool, newSlug)
+	if err != nil {
+		return nil, fmt.Errorf("new_slug %q: %w", newSlug, err)
+	}
+	// updated_at stays put: the memory's content didn't change, and a bump
+	// would reset its decay and float it to the top of list_memories.
+	row := s.pool.QueryRow(ctx, `UPDATE memories SET superseded_by = $1 WHERE slug = $2 RETURNING `+memoryColumns,
+		newID, oldSlug)
+	mem, err := scanMemory(row)
+	if err != nil {
+		return nil, fmt.Errorf("old_slug %q: %w", oldSlug, err)
 	}
 	return mem, nil
 }

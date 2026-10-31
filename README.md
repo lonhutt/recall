@@ -71,9 +71,10 @@ The following are exposed as MCP tools:
 
 | Tool | Purpose |
 |---|---|
-| `save_memory` | Create a structured note (type, slug, description, body, tags) |
-| `update_memory` | Patch an existing note by slug (only given fields change; re-embeds if description/body changed) |
-| `search_memory` | Semantic search over notes, with optional type/project/agent/tag filters |
+| `save_memory` | Create a structured note (type, slug, description, body, tags). Needs a `project` or `global: true`; blocks on a likely duplicate unless `force: true`; `overrides` names a global note this project note takes precedence over |
+| `update_memory` | Patch an existing note by slug (only given fields change; re-embeds if description/body changed; `clear_superseded_by` undoes a supersession) |
+| `search_memory` | Hybrid search over notes (semantic + keyword, so exact slugs, identifiers and error text match too), with optional type/project/agent/tag filters. A project filter includes global notes |
+| `supersede_memory` | Mark a note as replaced by another; it ranks below current notes and comes back flagged |
 | `list_memories` | Browse notes by metadata filters, no embedding call |
 | `delete_memory` | Delete a note by slug |
 | `log_event` | Record a timestamped episodic event |
@@ -87,6 +88,17 @@ The following are exposed as MCP tools:
   embedding TYPE vector(N)`) and re-embedding every existing row — run
   `recall backfill-chunks` (or, in the compose setup, `docker compose exec
   recall /recall backfill-chunks`) once after applying the migration.
+- `search_memory` results carry two numbers. `score` is the fused rank
+  value they're ordered by (reciprocal rank fusion of the vector and
+  keyword rankings); it's only comparable within one search. `similarity`
+  is the cosine match (1.0 is identical), the absolute "is this actually
+  relevant" signal. Superseded notes, and global notes overridden within the
+  searched project, rank below the rest, and older notes rank lower
+  (half-life 90 days for `project`/`feedback`, 720 for `user`/`reference`).
+- `recall eval` scores search ranking against a probe file read on stdin
+  (`docker compose run --rm -T recall eval < probes.json`), comparing
+  vector-only and hybrid search. Keep the probe file out of the repo; it
+  describes real memories.
 - `slug` is globally unique across all memories (one flat namespace, not
   scoped per project).
 - The embedding server is a separate `llama-server` instance from any

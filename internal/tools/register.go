@@ -25,6 +25,10 @@ func (t *Tools) RegisterAll(s *mcp.Server) {
 		Description: "Delete a memory note by slug.",
 	}, t.DeleteMemory)
 	mcp.AddTool(s, &mcp.Tool{
+		Name:        "supersede_memory",
+		Description: "Mark a memory as superseded by another. Search ranks it below current memories and flags it, instead of treating it as still true.",
+	}, t.SupersedeMemory)
+	mcp.AddTool(s, &mcp.Tool{
 		Name:        "log_event",
 		Description: "Record a timestamped episodic event.",
 	}, t.LogEvent)

@@ -28,6 +28,10 @@ func New(ctx context.Context, connString string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parsing database url: %w", err)
 	}
+	// HNSW scans stop at ef_search candidates and filter afterwards, so a
+	// project or embedding_model filter could empty the results; iterative
+	// scans keep going until the LIMIT is met.
+	cfg.ConnConfig.RuntimeParams["hnsw.iterative_scan"] = "strict_order"
 	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
 		return pgxvec.RegisterTypes(ctx, conn)
 	}

@@ -11,9 +11,9 @@ import (
 )
 
 type SearchMemoryArgs struct {
-	Query   string   `json:"query" jsonschema:"natural-language search text"`
+	Query   string   `json:"query" jsonschema:"natural-language search text; exact terms such as slugs, identifiers or error text also match"`
 	Type    string   `json:"type,omitempty" jsonschema:"restrict to this memory type"`
-	Project string   `json:"project,omitempty"`
+	Project string   `json:"project,omitempty" jsonschema:"this project's memories plus global ones; omit to search everything"`
 	Agent   string   `json:"agent,omitempty"`
 	Tags    []string `json:"tags,omitempty" jsonschema:"require all of these tags"`
 	Limit   int      `json:"limit,omitempty" jsonschema:"max results, default 10, max 50"`
@@ -40,14 +40,20 @@ func (t *Tools) SearchMemory(ctx context.Context, _ *mcp.CallToolRequest, a Sear
 	// re-embedded table would quietly degrade ranking instead of just
 	// returning fewer rows.
 	filter.EmbeddingModel = &t.EmbeddingModel
-	scored, err := t.Store.SearchMemories(ctx, vectors[0], filter, limit)
+	scored, err := t.Store.SearchMemories(ctx, vectors[0], a.Query, filter, limit)
 	if err != nil {
 		return nil, SearchMemoryResult{}, err
 	}
 
 	results := make([]ScoredMemoryDTO, len(scored))
 	for i, s := range scored {
-		results[i] = ScoredMemoryDTO{MemoryDTO: newMemoryDTO(&s.Memory), Score: s.Score}
+		results[i] = ScoredMemoryDTO{
+			MemoryDTO:    newMemoryDTO(&s.Memory),
+			Score:        s.Score,
+			Similarity:   s.Similarity,
+			OverriddenBy: s.OverriddenBy,
+			Age:          humanAge(s.UpdatedAt),
+		}
 	}
 	return nil, SearchMemoryResult{Results: results}, nil
 }

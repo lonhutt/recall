@@ -19,6 +19,13 @@ import (
 // returns a connected Store. Skips the test if Docker isn't reachable.
 func newTestStore(t *testing.T) *postgres.Store {
 	t.Helper()
+	return connectTestStore(t, newTestDB(t))
+}
+
+// newTestDB starts a migrated database and returns its connection string,
+// for tests that need to connect with their own session settings.
+func newTestDB(t *testing.T) string {
+	t.Helper()
 	ctx := context.Background()
 
 	ctr, err := tcpostgres.Run(ctx, "pgvector/pgvector:pg17",
@@ -46,8 +53,12 @@ func newTestStore(t *testing.T) *postgres.Store {
 	if err := postgres.RunMigrations(connString); err != nil {
 		t.Fatalf("running migrations: %v", err)
 	}
+	return connString
+}
 
-	store, err := postgres.New(ctx, connString)
+func connectTestStore(t *testing.T, connString string) *postgres.Store {
+	t.Helper()
+	store, err := postgres.New(context.Background(), connString)
 	if err != nil {
 		t.Fatalf("connecting store: %v", err)
 	}

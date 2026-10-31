@@ -7,36 +7,43 @@ import (
 )
 
 type MemoryDTO struct {
-	ID          string   `json:"id"`
-	Type        string   `json:"type"`
-	Slug        string   `json:"slug"`
-	Description string   `json:"description"`
-	Body        string   `json:"body"`
-	Project     string   `json:"project,omitempty"`
-	Agent       string   `json:"agent,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
-	CreatedAt   string   `json:"created_at"`
-	UpdatedAt   string   `json:"updated_at"`
+	ID           string   `json:"id"`
+	Type         string   `json:"type"`
+	Slug         string   `json:"slug"`
+	Description  string   `json:"description"`
+	Body         string   `json:"body"`
+	Project      string   `json:"project,omitempty"`
+	Agent        string   `json:"agent,omitempty"`
+	Tags         []string `json:"tags,omitempty"`
+	SupersededBy string   `json:"superseded_by,omitempty"`
+	Overrides    string   `json:"overrides,omitempty"`
+	CreatedAt    string   `json:"created_at"`
+	UpdatedAt    string   `json:"updated_at"`
 }
 
 func newMemoryDTO(m *models.Memory) MemoryDTO {
 	return MemoryDTO{
-		ID:          m.ID,
-		Type:        m.Type,
-		Slug:        m.Slug,
-		Description: m.Description,
-		Body:        m.Body,
-		Project:     m.Project,
-		Agent:       m.Agent,
-		Tags:        m.Tags,
-		CreatedAt:   m.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:   m.UpdatedAt.Format(time.RFC3339),
+		ID:           m.ID,
+		Type:         m.Type,
+		Slug:         m.Slug,
+		Description:  m.Description,
+		Body:         m.Body,
+		Project:      m.Project,
+		Agent:        m.Agent,
+		Tags:         m.Tags,
+		SupersededBy: m.SupersededBy,
+		Overrides:    m.Overrides,
+		CreatedAt:    m.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:    m.UpdatedAt.Format(time.RFC3339),
 	}
 }
 
 type ScoredMemoryDTO struct {
 	MemoryDTO
-	Score float64 `json:"score"`
+	Score        float64 `json:"score"`
+	Similarity   float64 `json:"similarity"`
+	OverriddenBy string  `json:"overridden_by,omitempty"`
+	Age          string  `json:"age,omitempty"`
 }
 
 type LogEventDTO struct {
